@@ -57,7 +57,7 @@ async def on_ready():
     check_wiki_stock.start()
 
 # --- THE WIKI API ENGINE ---
-@tasks.loop(minutes=2)
+@tasks.loop(seconds=15)
 async def check_wiki_stock():
     global bot_settings
     await bot.wait_until_ready()
