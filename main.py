@@ -6,6 +6,7 @@ import threading
 import json
 import requests
 import asyncio
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
@@ -46,7 +47,7 @@ bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crat
 pending_backup = False 
 ready_to_track = False  
 
-# Global temporary dictionary storage for drafts before confirmation
+# Draft state tracker: maps guild_id -> {"matches": {item: role_id}, "last_msg_id": msg_id}
 pending_autorole_drafts = {}
 
 # --- PORT SERVER ---
@@ -68,6 +69,30 @@ threading.Thread(target=run_health_server, daemon=True).start()
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- ACCURATE STRING SIMILARITY ENGINE ---
+def clean_string(s: str) -> str:
+    """Removes emojis, punctuation, common filler words, and excess whitespace."""
+    s = s.lower()
+    s = re.sub(r'[^\w\s\']', '', s) # Strip emojis/symbols but keep apostrophes
+    s = re.sub(r'\b(ping|role|alert|feed|tracker|bot|pings|roles)\b', '', s) # Strip noise words
+    return " ".join(s.split())
+
+def calculate_match_score(item: str, role_name: str) -> float:
+    """Computes a string intersection match score between 0.0 and 1.0."""
+    item_tokens = set(clean_string(item).split())
+    role_tokens = set(clean_string(role_name).split())
+    
+    if not item_tokens or not role_tokens:
+        return 0.0
+        
+    intersection = item_tokens.intersection(role_tokens)
+    
+    # Check if one string completely encompasses the other token-wise
+    if item_tokens.issubset(role_tokens) or role_tokens.issubset(item_tokens):
+        return 0.95 + (0.05 if item_tokens == role_tokens else 0.0)
+        
+    return len(intersection) / max(len(item_tokens), len(role_tokens))
 
 # --- MASTER ANTI-WIPE STORAGE ENGINE ---
 async def load_settings_from_discord():
@@ -294,70 +319,121 @@ def execute_unassigned():
     if unassigned_weather: embed.add_field(name="⛅ Weather", value="\n".join([f"• {w.title()} {ITEM_EMOJIS.get(w, '')}" for w in unassigned_weather]), inline=False)
     return embed
 
-# --- 🤖 AUTOMATED INTELLIGENT MATCHING CONTROLLERS ---
-def execute_autoroles_discovery(guild: discord.Guild):
-    global pending_autorole_drafts
-    draft_matches = {}
+# --- 🤖 HIGHLY ACCURATE AUTO-ROLE MATCHING CONTROLLERS ---
+def generate_draft_embed(draft_matches):
+    """Generates a neat status presentation of the current draft state mapping list."""
     matched_lines = []
-    
     for item in ALL_ASSIGNABLE_ITEMS:
-        best_role = None
-        item_clean = item.replace(" crate", "").replace(" sprinkler", "").strip()
-        
-        for role in guild.roles:
-            role_name_lower = role.name.lower().strip()
-            if role_name_lower == item or role_name_lower == item_clean or item_clean in role_name_lower or role_name_lower in item:
-                best_role = role
-                break
-                
-        if best_role and not best_role.is_default():
-            draft_matches[item] = best_role.id
+        if item in draft_matches:
+            role_id = draft_matches[item]
             emoji = ITEM_EMOJIS.get(item, "🔹")
-            matched_lines.append(f"• **{item.title()}** {emoji} ➡️ {best_role.mention}")
-
+            matched_lines.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
+            
     if not matched_lines:
         return discord.Embed(
             title="🔍 Auto-Role Finder Results",
-            description="I scanned all roles but couldn't find any role names matching the items on my tracking list.",
+            description="No roles are currently drafted.",
+            color=discord.Color.orange()
+        )
+        
+    return discord.Embed(
+        title="🤖 Auto-Role Matcher Proposals",
+        description="Review the current proposed pairings below:\n\n" + "\n".join(matched_lines) + "\n\n* To edit an item: `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to lock them in, or `!deny` to cancel.",
+        color=discord.Color.blurple()
+    )
+
+def execute_autoroles_discovery(guild: discord.Guild):
+    global pending_autorole_drafts
+    draft_matches = {}
+    
+    for item in ALL_ASSIGNABLE_ITEMS:
+        best_role = None
+        highest_score = 0.0
+        
+        for role in guild.roles:
+            if role.is_default():
+                continue
+            score = calculate_match_score(item, role.name)
+            if score > highest_score and score >= 0.45: # Minimum confidence threshold
+                highest_score = score
+                best_role = role
+                
+        if best_role:
+            draft_matches[item] = best_role.id
+
+    if not draft_matches:
+        return discord.Embed(
+            title="🔍 Auto-Role Finder Results",
+            description="I scanned all roles using enhanced string similarity but couldn't find any robust matches on my lists.",
             color=discord.Color.orange()
         ), False
 
-    pending_autorole_drafts[guild.id] = draft_matches
+    pending_autorole_drafts[guild.id] = {"matches": draft_matches, "last_msg_id": None}
+    return generate_draft_embed(draft_matches), True
 
-    embed = discord.Embed(
-        title="🤖 Auto-Role Matcher Proposals",
-        description="I found the following matching roles!\n\n**Review the proposed pairings below:**\n\n" + "\n".join(matched_lines) + "\n\n* Need to fix one? Use `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to save everything or `!deny` to cancel.",
-        color=discord.Color.blurple()
-    )
-    return embed, True
-
-def execute_edit_draft(guild_id: int, item_name: str, role: discord.Role):
+async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: str, role: discord.Role):
     global pending_autorole_drafts
-    draft = pending_autorole_drafts.get(guild_id)
-    if not draft:
-        return "❌ There is no active auto-role draft to edit right now. Run `!autoroles` first!"
+    draft_data = pending_autorole_drafts.get(guild_id)
+    if not draft_data:
+        msg = "❌ There is no active auto-role draft to edit right now. Run `!autoroles` first!"
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.response.send_message(msg)
+        else:
+            await ctx_or_interaction.send(msg)
+        return
         
     item_lower = item_name.strip().lower()
     if item_lower in DISPLAY_ONLY_SEEDS:
-        return f"❌ Role assignment disabled for `{item_name}`. This item is display-only."
+        msg = f"❌ Role assignment disabled for `{item_name}`. This item is display-only."
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.response.send_message(msg)
+        else:
+            await ctx_or_interaction.send(msg)
+        return
     if item_lower not in ALL_ASSIGNABLE_ITEMS:
-        return f"❌ `{item_name}` is not a recognized game tracking item."
+        msg = f"❌ `{item_name}` is not a recognized game tracking item."
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.response.send_message(msg)
+        else:
+            await ctx_or_interaction.send(msg)
+        return
         
-    # Update or add the item mapping directly inside the draft buffer
-    draft[item_lower] = role.id
-    emoji = ITEM_EMOJIS.get(item_lower, "🔹")
-    return f"✏️ **Draft Updated!** In the pending queue, **{item_name.title()}** {emoji} is now bound to {role.mention}. Type `!approve` when you are ready to lock it in!"
+    # Update draft payload list element
+    draft_data["matches"][item_lower] = role.id
+    new_embed = generate_draft_embed(draft_data["matches"])
+    
+    # Try cleaning up old configuration layout messages to minimize chat clutter
+    if draft_data["last_msg_id"]:
+        try:
+            channel = ctx_or_interaction.channel
+            old_msg = await channel.fetch_message(draft_data["last_msg_id"])
+            await old_msg.delete()
+        except Exception:
+            pass
+
+    success_text = f"✏️ **Draft updated!** Set **{item_lower.title()}** to {role.mention}."
+    
+    if isinstance(ctx_or_interaction, discord.Interaction):
+        # Slash command response
+        await ctx_or_interaction.response.send_message(content=success_text)
+        new_msg = await ctx_or_interaction.channel.send(embed=new_embed)
+        draft_data["last_msg_id"] = new_msg.id
+    else:
+        # Prefix command response
+        await ctx_or_interaction.send(content=success_text)
+        new_msg = await ctx_or_interaction.send(embed=new_embed)
+        draft_data["last_msg_id"] = new_msg.id
 
 def execute_approve_draft(guild_id: int):
     global bot_settings, pending_backup, pending_autorole_drafts
-    draft = pending_autorole_drafts.get(guild_id)
-    if not draft:
+    draft_data = pending_autorole_drafts.get(guild_id)
+    if not draft_data or not draft_data["matches"]:
         return "❌ There is no active auto-role draft pending approval. Run `!autoroles` first!"
         
-    bot_settings["roles"].update(draft)
+    bot_settings["roles"].update(draft_data["matches"])
     del pending_autorole_drafts[guild_id]
     pending_backup = True
-    return f"✅ **Success!** Automatically saved {len(draft)} tracking roles into the cloud database infrastructure!"
+    return f"✅ **Success!** Automatically saved {len(draft_data['matches'])} tracking roles into the cloud database infrastructure!"
 
 def execute_deny_draft(guild_id: int):
     global pending_autorole_drafts
@@ -383,17 +459,20 @@ async def slash_unassigned(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
     await interaction.response.send_message(embed=execute_unassigned())
 
-@bot.tree.command(name="autoroles", description="Scan and match server roles to tracking items.")
+@bot.tree.command(name="autoroles", description="Scan and match server roles to tracking items using enhanced accuracy.")
 async def slash_autoroles(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
-    embed, _ = execute_autoroles_discovery(interaction.guild)
+    embed, has_matches = execute_autoroles_discovery(interaction.guild)
     await interaction.response.send_message(embed=embed)
+    if has_matches:
+        msg = await interaction.original_response()
+        pending_autorole_drafts[interaction.guild_id]["last_msg_id"] = msg.id
 
 @bot.tree.command(name="editdraft", description="Manually edit or add a role pairing inside the pending auto-roles draft queue.")
 @app_commands.describe(item_name="The item name to override", role="The new role to couple with it")
 async def slash_editdraft(interaction: discord.Interaction, item_name: str, role: discord.Role):
     if not interaction.user.guild_permissions.manage_roles: return
-    await interaction.response.send_message(execute_edit_draft(interaction.guild_id, item_name, role))
+    await execute_edit_draft_flow(interaction, interaction.guild_id, item_name, role)
 
 @bot.tree.command(name="approve")
 async def slash_approve(interaction: discord.Interaction):
@@ -430,8 +509,10 @@ async def unassigned(ctx):
 @bot.command(name="autoroles")
 @commands.has_permissions(manage_roles=True)
 async def cmd_autoroles(ctx):
-    embed, _ = execute_autoroles_discovery(ctx.guild)
-    await ctx.send(embed=embed)
+    embed, has_matches = execute_autoroles_discovery(ctx.guild)
+    msg = await ctx.send(embed=embed)
+    if has_matches:
+        pending_autorole_drafts[ctx.guild.id]["last_msg_id"] = msg.id
 
 @bot.command(name="editdraft")
 @commands.has_permissions(manage_roles=True)
@@ -442,8 +523,8 @@ async def cmd_editdraft(ctx, *, input_str: str):
             await ctx.send("❌ Format error! Use: `!editdraft [Item Name] [@Role]`")
             return
         role = await commands.RoleConverter().convert(ctx, parts[1].strip())
-        await ctx.send(execute_edit_draft(ctx.guild.id, parts[0], role))
-    except Exception:
+        await execute_edit_draft_flow(ctx, ctx.guild.id, parts[0], role)
+    except Exception as e:
         await ctx.send("❌ Error modifying draft element: Verification failed.")
 
 @bot.command(name="approve")
