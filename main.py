@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 import os
 import threading
@@ -9,8 +10,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
-
-SETTINGS_FILE = "bot_settings.json"
 
 VALID_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato", "apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon bloom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
@@ -45,22 +44,10 @@ ITEM_EMOJIS = {
     "rainbow moon": "🌙", "blood moon": "🔴", "rainbow": "🌈"
 }
 
-def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
+# Master runtime memory configuration
+bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
 
-def save_settings(settings):
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f)
-
-bot_settings = load_settings()
-
-# --- PORT SCANNER FIX (For Render/Railway cloud hosting) ---
+# --- PORT SCANNER FIX (For Cloud Hosting) ---
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -80,9 +67,64 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# --- MEMORY SYNC ENGINE (DYNAMIC CLOUD TOPIC METHOD) ---
+async def load_settings_from_discord():
+    """Scans channel descriptions globally to reconstruct mappings after platform updates."""
+    global bot_settings
+    print("🔄 Syncing configuration maps from text channel topics...")
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            if channel.topic and "GAG2_DATA:" in channel.topic:
+                try:
+                    raw_json = channel.topic.split("GAG2_DATA:")[1].strip()
+                    saved_data = json.loads(raw_json)
+                    
+                    for k, v in saved_data.get("channels", {}).items():
+                        if v: bot_settings["channels"][k] = v
+                    for k, v in saved_data.get("roles", {}).items():
+                        if v: bot_settings["roles"][k] = v
+                    print(f"✅ Reconstructed configuration map using topic data on #{channel.name}!")
+                except Exception:
+                    pass
+
+async def save_settings_to_discord():
+    """Serializes configurations and saves them directly to an active channel topic description."""
+    global bot_settings
+    for cat, ch_id in bot_settings["channels"].items():
+        if ch_id:
+            channel = bot.get_channel(ch_id)
+            if channel:
+                clean_topic = ""
+                if channel.topic and "GAG2_DATA:" in channel.topic:
+                    clean_topic = channel.topic.split("GAG2_DATA:")[0].strip()
+                elif channel.topic:
+                    clean_topic = channel.topic.strip()
+
+                backup_package = {
+                    "channels": bot_settings["channels"],
+                    "roles": bot_settings["roles"]
+                }
+                serialized = json.dumps(backup_package)
+                new_topic = f"{clean_topic} | GAG2_DATA:{serialized}".strip(" | ")
+                
+                try:
+                    await channel.edit(topic=new_topic)
+                    return  # Successfully cluster backed up to one working configuration channel
+                except discord.Forbidden:
+                    print(f"⚠️ Bot doesn't have permissions to write topic metadata on #{channel.name}")
+
 @bot.event
 async def on_ready():
     print(f"✅ Success! GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
+    await load_settings_from_discord()
+    
+    # Sync hybrid app commands tree globally
+    try:
+        synced = await bot.tree.sync()
+        print(f"⚡ Global application slash command tree synchronized! ({len(synced)} Slash Commands Ready)")
+    except Exception as e:
+        print(f"⚠️ Application command sync failure: {e}")
+        
     check_wiki_stock.start()
 
 # --- THE WIKI API ENGINE ---
@@ -105,7 +147,6 @@ async def check_wiki_stock():
         
         channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
         saved_roles = bot_settings.get("roles", {})
-        has_updates = False
 
         # ⛅ WEATHER DETECTION
         weather_data = stock.get("weather", {})
@@ -114,7 +155,6 @@ async def check_wiki_stock():
         if weather_type in VALID_WEATHER:
             if bot_settings.get("last_weather") != weather_type:
                 bot_settings["last_weather"] = weather_type
-                has_updates = True
                 
                 w_id = channels.get("weather")
                 if w_id and (w_channel := bot.get_channel(w_id)):
@@ -131,7 +171,6 @@ async def check_wiki_stock():
         
         if bot_settings.get("last_stock_items") != current_items_only:
             bot_settings["last_stock_items"] = current_items_only
-            has_updates = True
 
             # 🌱 SEEDS DETECTION
             seed_pings, seed_list_str = [], []
@@ -193,25 +232,70 @@ async def check_wiki_stock():
                         color=discord.Color.gold()
                     ))
 
-        if has_updates:
-            save_settings(bot_settings)
-
     except Exception as e:
         print(f"Error reading live wiki api: {e}")
 
-# --- SETUP COMMANDS ---
+# --- REUSABLE BACKEND FUNCTIONS (Powers both Command Methods) ---
+async def execute_setchannel(category: str, channel: discord.TextChannel):
+    category = category.lower().strip()
+    if category in ["weather", "seeds", "gear", "crates"]:
+        bot_settings["channels"][category] = channel.id
+        await save_settings_to_discord()
+        return f"✅ **{category.capitalize()}** alerts will now be posted in {channel.mention}!"
+    return "❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`."
+
+async def execute_setrole(item_name: str, role: discord.Role):
+    item_lower = item_name.strip().lower()
+    if item_lower not in (VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER):
+        return f"❌ `{item_name}` is not recognized in tracking lists."
+    bot_settings["roles"][item_lower] = role.id
+    await save_settings_to_discord()
+    return f"✅ Pings for **{item_name}** will now ping {role.mention}!"
+
+async def execute_test(guild):
+    channels = bot_settings.get("channels", {})
+    for cat, name, item, col in [("weather", "⛅ Weather Alert! (TEST)", "Blood Moon 🔴", discord.Color.blue()),
+                                 ("seeds", "🌱 Seed Stock! (TEST)", "• Bamboo 🎋 **(x2)**\n• Apple 🍎 **(x4)**", discord.Color.green()),
+                                 ("gear", "🛠️ Gear Stock! (TEST)", "• Trowel 🥄 **(x1)**", discord.Color.orange()),
+                                 ("crates", "📦 Crate Shop! (TEST)", "• Ladder Crate 🪜 **(x3)**", discord.Color.gold())]:
+        if channels.get(cat):
+            ch = guild.get_channel(channels[cat])
+            if ch:
+                await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
+
+# --- DISCORD TYPE 1: SLASH COMMAND IMPLEMENTATIONS ---
+@bot.tree.command(name="setchannel", description="Map a category alert feed to a specific text channel.")
+@app_commands.describe(category="Use: weather, seeds, gear, or crates", channel="The channel destination")
+async def slash_setchannel(interaction: discord.Interaction, category: str, channel: discord.TextChannel):
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.response.send_message("❌ Permissions failure: Manage Channels is required.", ephemeral=True)
+        return
+    reply_msg = await execute_setchannel(category, channel)
+    await interaction.response.send_message(reply_msg)
+
+@bot.tree.command(name="setrole", description="Bind a role notification ping to a tracking item.")
+@app_commands.describe(item_name="The exact game item or weather name", role="The role to target")
+async def slash_setrole(interaction: discord.Interaction, item_name: str, role: discord.Role):
+    if not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message("❌ Permissions failure: Manage Roles is required.", ephemeral=True)
+        return
+    reply_msg = await execute_setrole(item_name, role)
+    await interaction.response.send_message(reply_msg)
+
+@bot.tree.command(name="test", description="Broadcast dummy notification layouts to verify channels.")
+async def slash_test(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.response.send_message("❌ Clearance denied.", ephemeral=True)
+        return
+    await interaction.response.send_message("🔄 Processing mock diagnostic alerts...")
+    await execute_test(interaction.guild)
+
+# --- DISCORD TYPE 2: ORIGINAL PREFIX COMMANDS (!) ---
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def setchannel(ctx, category: str, channel: discord.TextChannel):
-    category = category.lower()
-    if category in ["weather", "seeds", "gear", "crates"]:
-        if "channels" not in bot_settings:
-            bot_settings["channels"] = {"weather": None, "seeds": None, "gear": None, "crates": None}
-        bot_settings["channels"][category] = channel.id
-        save_settings(bot_settings)
-        await ctx.send(f"✅ **{category.capitalize()}** alerts will now be posted in {channel.mention}!")
-    else:
-        await ctx.send("❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`.")
+    reply_msg = await execute_setchannel(category, channel)
+    await ctx.send(reply_msg)
 
 @bot.command()
 @commands.has_permissions(manage_roles=True)
@@ -221,32 +305,18 @@ async def setrole(ctx, *, input_str: str):
         if len(parts) < 2:
             await ctx.send("❌ Format error! Use: `!setrole [Item Name] [@Role]`")
             return
-        item_name = parts[0].strip().lower()
         role_mention = parts[1].strip()
         role = await commands.RoleConverter().convert(ctx, role_mention)
-        
-        if item_name not in (VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER):
-            await ctx.send(f"❌ `{parts[0]}` is not recognized in tracking lists.")
-            return
-        bot_settings["roles"][item_name] = role.id
-        save_settings(bot_settings)
-        await ctx.send(f"✅ Pings for **{parts[0]}** will now ping {role.mention}!")
+        reply_msg = await execute_setrole(parts[0], role)
+        await ctx.send(reply_msg)
     except Exception:
-        await ctx.send(f"❌ Error updating role: Verification failed.")
+        await ctx.send("❌ Error updating role: Verification failed.")
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def test(ctx):
     await ctx.send("🔄 Sending test alerts...")
-    channels = bot_settings.get("channels", {})
-    for cat, name, item, col in [("weather", "⛅ Weather Alert! (TEST)", "Blood Moon 🔴", discord.Color.blue()),
-                                 ("seeds", "🌱 Seed Stock! (TEST)", "• Bamboo 🎋 **(x2)**\n• Apple 🍎 **(x4)**", discord.Color.green()),
-                                 ("gear", "🛠️ Gear Stock! (TEST)", "• Trowel 🥄 **(x1)**", discord.Color.orange()),
-                                 ("crates", "📦 Crate Shop! (TEST)", "• Ladder Crate 🪜 **(x3)**", discord.Color.gold())]:
-        if channels.get(cat):
-            ch = bot.get_channel(channels[cat])
-            if ch:
-                await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
+    await execute_test(ctx.guild)
     await ctx.send("🎯 Test completed!")
 
 bot.run(TOKEN)
