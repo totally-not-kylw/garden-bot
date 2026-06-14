@@ -17,6 +17,34 @@ VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
 VALID_WEATHER = ["rain", "blizzard", "lightning", "midas", "rainbow moon", "blood moon", "rainbow"]
 
+# --- EMOJI MAPPING ---
+ITEM_EMOJIS = {
+    # Seeds
+    "carrot": "🥕", "strawberry": "🍓", "blueberry": "🫐", "tulip": "🌷", "tomato": "🍅",
+    "apple": "🍎", "bamboo": "🎋", "grape": "🍇", "corn": "🌽", "cactus": "🌵",
+    "pineapple": "🍍", "mushroom": "🍄", "green bean": "🫛", "banana": "🍌", 
+    "coconut": "🥥", "mango": "🥭", "dragon fruit": "🐉", "acorn": "🌰", 
+    "cherry": "🍒", "sunflower": "🌻", "venus fly trap": "🪴", "pomegranate": "🍎", 
+    "poison apple": "🍏", "moon blossom": "🌸", "dragon's breath": "🐲",
+
+    # Gear
+    "common watering can": "💧", "common sprinkler": "💧", "uncommon sprinkler": "⚙️", 
+    "trowel": "🥄", "rare sprinkler": "⚡", "jump mushroom": "🍄", "speed mushroom": "🍄", 
+    "shrink mushroom": "🍄", "supersize mushroom": "🍄", "gnome": "🎅", "flashbang": "💥", 
+    "basic pot": "🏺", "legendary sprinkler": "👑", "invisibility mushroom": "🍄", 
+    "teleporter": "🌀", "super watering can": "🪣", "super sprinkler": "🌀",
+    
+    # Crates
+    "ladder crate": "🪜", "bench crate": "📦", "light crate": "💡", "sign crate": "🪧", 
+    "arch crate": "📦", "roleplay crate": "🎭", "bridge crate": "🌉", "spring crate": "📦", 
+    "seesaw crate": "📦", "conveyor crate": "📦", "owner door crate": "🚪", 
+    "bear trap crate": "🪤", "fence crate": "🚧", "teleporter pad crate": "🌀",
+    
+    # Weather
+    "rain": "🌧️", "blizzard": "🌨️", "lightning": "🌩️", "midas": "🪙", 
+    "rainbow moon": "🌙", "blood moon": "🔴", "rainbow": "🌈"
+}
+
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -24,7 +52,7 @@ def load_settings():
                 return json.load(f)
         except Exception:
             pass
-    return {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None}
+    return {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
 
 def save_settings(settings):
     with open(SETTINGS_FILE, "w") as f:
@@ -75,88 +103,98 @@ async def check_wiki_stock():
         api_data = response.json()
         stock = api_data.get("stock", {})
         
-        # Smart Item Cache: Compare ONLY the actual items, ignoring changing server timestamps!
-        current_items_only = json.dumps(stock, sort_keys=True)
-        if bot_settings.get("last_stock_items") == current_items_only:
-            return
-            
         channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
         saved_roles = bot_settings.get("roles", {})
+        has_updates = False
 
         # ⛅ WEATHER DETECTION
         weather_data = stock.get("weather", {})
         weather_type = weather_data.get("type", "").lower()
         
         if weather_type in VALID_WEATHER:
-            w_id = channels.get("weather")
-            if w_id and (w_channel := bot.get_channel(w_id)):
-                w_ping = f"<@&{saved_roles[weather_type]}>" if weather_type in saved_roles else ""
-                await w_channel.send(content=w_ping, embed=discord.Embed(
-                    title="⛅ Weather Shift Detected!", 
-                    description=f"The environment has changed to: **{weather_type.capitalize()}**", 
-                    color=discord.Color.blue()
-                ))
+            if bot_settings.get("last_weather") != weather_type:
+                bot_settings["last_weather"] = weather_type
+                has_updates = True
+                
+                w_id = channels.get("weather")
+                if w_id and (w_channel := bot.get_channel(w_id)):
+                    w_ping = f"<@&{saved_roles[weather_type]}>" if weather_type in saved_roles else ""
+                    w_emoji = ITEM_EMOJIS.get(weather_type, "⛅")
+                    await w_channel.send(content=w_ping, embed=discord.Embed(
+                        title="⛅ Weather Alert!", 
+                        description=f"The environment has changed to: **{weather_type.capitalize()}** {w_emoji}", 
+                        color=discord.Color.blue()
+                    ))
 
-        # 🌱 SEEDS DETECTION
-        seed_pings, seed_list_str = [], []
-        for seed_obj in stock.get("seeds", []):
-            seed_name = seed_obj.get("name", "")
-            seed_qty = seed_obj.get("quantity", 1)
-            seed_lower = seed_name.lower()
-            if seed_lower in VALID_SEEDS:
-                seed_list_str.append(f"• {seed_name} **(x{seed_qty})**")
-                if seed_lower in saved_roles:
-                    seed_pings.append(f"<@&{saved_roles[seed_lower]}>")
-                    
-        if seed_list_str and (s_id := channels.get("seeds")):
-            if s_channel := bot.get_channel(s_id):
-                await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(
-                    title="🌱 Seed Shop Rotation", 
-                    description="\n".join(seed_list_str), 
-                    color=discord.Color.green()
-                ))
+        # Smart Item Cache
+        current_items_only = json.dumps({k: stock.get(k) for k in ["seeds", "gear", "crates"]}, sort_keys=True)
+        
+        if bot_settings.get("last_stock_items") != current_items_only:
+            bot_settings["last_stock_items"] = current_items_only
+            has_updates = True
 
-        # 🛠️ GEAR DETECTION
-        gear_pings, gear_list_str = [], []
-        for gear_obj in stock.get("gear", []):
-            gear_name = gear_obj.get("name", "")
-            gear_qty = gear_obj.get("quantity", 1)
-            gear_lower = gear_name.lower()
-            if gear_lower in VALID_GEAR:
-                gear_list_str.append(f"• {gear_name} **(x{gear_qty})**")
-                if gear_lower in saved_roles:
-                    gear_pings.append(f"<@&{saved_roles[gear_lower]}>")
-                    
-        if gear_list_str and (g_id := channels.get("gear")):
-            if g_channel := bot.get_channel(g_id):
-                await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(
-                    title="🛠️ Gear Shop Rotation", 
-                    description="\n".join(gear_list_str), 
-                    color=discord.Color.orange()
-                ))
+            # 🌱 SEEDS DETECTION
+            seed_pings, seed_list_str = [], []
+            for seed_obj in stock.get("seeds", []):
+                seed_name = seed_obj.get("name", "")
+                seed_qty = seed_obj.get("quantity", 1)
+                seed_lower = seed_name.lower()
+                if seed_lower in VALID_SEEDS:
+                    emoji = ITEM_EMOJIS.get(seed_lower, "🌱")
+                    seed_list_str.append(f"• {seed_name} {emoji} **(x{seed_qty})**")
+                    if seed_lower in saved_roles:
+                        seed_pings.append(f"<@&{saved_roles[seed_lower]}>")
+                        
+            if seed_list_str and (s_id := channels.get("seeds")):
+                if s_channel := bot.get_channel(s_id):
+                    await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(
+                        title="🌱 Seed Stock!", 
+                        description="\n".join(seed_list_str), 
+                        color=discord.Color.green()
+                    ))
 
-        # 📦 CRATES DETECTION
-        crate_pings, crate_list_str = [], []
-        for crate_obj in stock.get("crates", []):
-            crate_name = crate_obj.get("name", "")
-            crate_qty = crate_obj.get("quantity", 1)
-            crate_lower = crate_name.lower()
-            if crate_lower in VALID_CRATES:
-                crate_list_str.append(f"• {crate_name} **(x{crate_qty})**")
-                if crate_lower in saved_roles:
-                    crate_pings.append(f"<@&{crate_lower}>")
+            # 🛠️ GEAR DETECTION
+            gear_pings, gear_list_str = [], []
+            for gear_obj in stock.get("gear", []):
+                gear_name = gear_obj.get("name", "")
+                gear_qty = gear_obj.get("quantity", 1)
+                gear_lower = gear_name.lower()
+                if gear_lower in VALID_GEAR:
+                    emoji = ITEM_EMOJIS.get(gear_lower, "🛠️")
+                    gear_list_str.append(f"• {gear_name} {emoji} **(x{gear_qty})**")
+                    if gear_lower in saved_roles:
+                        gear_pings.append(f"<@&{saved_roles[gear_lower]}>")
+                        
+            if gear_list_str and (g_id := channels.get("gear")):
+                if g_channel := bot.get_channel(g_id):
+                    await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(
+                        title="🛠️ Gear Stock!", 
+                        description="\n".join(gear_list_str), 
+                        color=discord.Color.orange()
+                    ))
 
-        if crate_list_str and (c_id := channels.get("crates")):
-            if c_channel := bot.get_channel(c_id):
-                await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(
-                    title="📦 Crate Drops Available", 
-                    description="\n".join(crate_list_str), 
-                    color=discord.Color.gold()
-                ))
+            # 📦 CRATES DETECTION
+            crate_pings, crate_list_str = [], []
+            for crate_obj in stock.get("crates", []):
+                crate_name = crate_obj.get("name", "")
+                crate_qty = crate_obj.get("quantity", 1)
+                crate_lower = crate_name.lower()
+                if crate_lower in VALID_CRATES:
+                    emoji = ITEM_EMOJIS.get(crate_lower, "📦")
+                    crate_list_str.append(f"• {crate_name} {emoji} **(x{crate_qty})**")
+                    if crate_lower in saved_roles:
+                        crate_pings.append(f"<@&{saved_roles[crate_lower]}>")
 
-        # Save core items to settings file
-        bot_settings["last_stock_items"] = current_items_only
-        save_settings(bot_settings)
+            if crate_list_str and (c_id := channels.get("crates")):
+                if c_channel := bot.get_channel(c_id):
+                    await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(
+                        title="📦 Crate Shop!", 
+                        description="\n".join(crate_list_str), 
+                        color=discord.Color.gold()
+                    ))
+
+        if has_updates:
+            save_settings(bot_settings)
 
     except Exception as e:
         print(f"Error reading live wiki api: {e}")
@@ -201,10 +239,10 @@ async def setrole(ctx, *, input_str: str):
 async def test(ctx):
     await ctx.send("🔄 Sending test alerts...")
     channels = bot_settings.get("channels", {})
-    for cat, name, item, col in [("weather", "⛅ Weather Shift Detected! (TEST)", "Blood Moon", discord.Color.blue()),
-                                 ("seeds", "🌱 Seed Shop Rotation (TEST)", "• Bamboo **(x2)**\n• Apple **(x4)**", discord.Color.green()),
-                                 ("gear", "🛠️ Gear Shop Rotation (TEST)", "• Trowel **(x1)**", discord.Color.orange()),
-                                 ("crates", "📦 Crate Drops Available (TEST)", "• Ladder Crate **(x3)**", discord.Color.gold())]:
+    for cat, name, item, col in [("weather", "⛅ Weather Alert! (TEST)", "Blood Moon 🔴", discord.Color.blue()),
+                                 ("seeds", "🌱 Seed Stock! (TEST)", "• Bamboo 🎋 **(x2)**\n• Apple 🍎 **(x4)**", discord.Color.green()),
+                                 ("gear", "🛠️ Gear Stock! (TEST)", "• Trowel 🥄 **(x1)**", discord.Color.orange()),
+                                 ("crates", "📦 Crate Shop! (TEST)", "• Ladder Crate 🪜 **(x3)**", discord.Color.gold())]:
         if channels.get(cat):
             ch = bot.get_channel(channels[cat])
             if ch:
