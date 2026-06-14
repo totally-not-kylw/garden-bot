@@ -8,8 +8,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-# THE ULTIMATE FIX: The actual, correct live API URL you tracked down!
 WIKI_API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
+
+# Fake browser headers to bypass 403 Forbidden blocks
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 LAST_SEEN_SEEDS = []
 LAST_SEEN_WEATHER = None
@@ -118,9 +122,9 @@ async def setrole(ctx, *, input_str: str):
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
     """Fetches the exact current response from the API for debugging."""
-    await ctx.send("🔍 Fetching live data from the wiki API...")
+    await ctx.send("🔍 Fetching live data from the wiki API with custom headers...")
     try:
-        response = requests.get(WIKI_API_URL, timeout=10)
+        response = requests.get(WIKI_API_URL, headers=HEADERS, timeout=10)
         if response.status_code != 200:
             await ctx.send(f"❌ API returned an error status code: {response.status_code}")
             return
@@ -179,7 +183,7 @@ async def check_wiki_stock():
     saved_roles = bot_settings.get("roles", {})
 
     try:
-        response = requests.get(WIKI_API_URL, timeout=10)
+        response = requests.get(WIKI_API_URL, headers=HEADERS, timeout=10)
         if response.status_code != 200:
             return
         data = response.json()
