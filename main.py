@@ -275,6 +275,41 @@ async def execute_test(guild):
             if ch:
                 await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
 
+def execute_unassigned():
+    saved_roles = bot_settings.get("roles", {})
+    
+    unassigned_seeds = [s for s in VALID_SEEDS if s not in saved_roles]
+    unassigned_gear = [g for g in VALID_GEAR if g not in saved_roles]
+    unassigned_crates = [c for c in VALID_CRATES if c not in saved_roles]
+    unassigned_weather = [w for w in VALID_WEATHER if w not in saved_roles]
+    
+    total_missing = len(unassigned_seeds) + len(unassigned_gear) + len(unassigned_crates) + len(unassigned_weather)
+    
+    if total_missing == 0:
+        embed = discord.Embed(
+            title="🎯 All Items Assigned!", 
+            description="Awesome job! Every tracking element has an associated ping role configured.", 
+            color=discord.Color.green()
+        )
+        return embed
+
+    embed = discord.Embed(
+        title="⚠️ Unassigned Tracker Elements", 
+        description="Here are the remaining items that do not have a role mapped to them yet:", 
+        color=discord.Color.red()
+    )
+    
+    if unassigned_seeds:
+        embed.add_field(name="🌱 Seeds", value="\n".join([f"• {s.title()} {ITEM_EMOJIS.get(s, '')}" for s in unassigned_seeds]), inline=False)
+    if unassigned_gear:
+        embed.add_field(name="🛠️ Gear", value="\n".join([f"• {g.title()} {ITEM_EMOJIS.get(g, '')}" for g in unassigned_gear]), inline=False)
+    if unassigned_crates:
+        embed.add_field(name="📦 Crates", value="\n".join([f"• {c.title()} {ITEM_EMOJIS.get(c, '')}" for c in unassigned_crates]), inline=False)
+    if unassigned_weather:
+        embed.add_field(name="⛅ Weather", value="\n".join([f"• {w.title()} {ITEM_EMOJIS.get(w, '')}" for w in unassigned_weather]), inline=False)
+        
+    return embed
+
 # --- DISCORD TYPE 1: SLASH COMMANDS ---
 @bot.tree.command(name="setchannel", description="Map a category alert feed to a specific text channel.")
 @app_commands.describe(category="Use: weather, seeds, gear, or crates", channel="The channel destination")
@@ -301,6 +336,14 @@ async def slash_test(interaction: discord.Interaction):
         return
     await interaction.response.send_message("🔄 Processing mock diagnostic alerts...")
     await execute_test(interaction.guild)
+
+@bot.tree.command(name="unassigned", description="Lists all tracking configuration elements missing role setups.")
+async def slash_unassigned(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message("❌ Clearance denied.", ephemeral=True)
+        return
+    embed = execute_unassigned()
+    await interaction.response.send_message(embed=embed)
 
 # --- DISCORD TYPE 2: PREFIX COMMANDS (!) ---
 @bot.command()
@@ -330,5 +373,11 @@ async def test(ctx):
     await ctx.send("🔄 Sending test alerts...")
     await execute_test(ctx.guild)
     await ctx.send("🎯 Test completed!")
+
+@bot.command()
+@commands.has_permissions(manage_roles=True)
+async def unassigned(ctx):
+    embed = execute_unassigned()
+    await ctx.send(embed=embed)
 
 bot.run(TOKEN)
