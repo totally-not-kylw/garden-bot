@@ -8,12 +8,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Put the ID of the public channel your bot is "watching" for stock updates here!
-WATCH_CHANNEL_ID = 123456789012345678  
+# 🛠️ FILL THESE TWO DETAILS OUT:
+WATCH_CHANNEL_ID = 1515279880487571497      # Put the ID of this tracking channel here
+TRACKER_BOT_USER_ID = 1515287187539890256   # Right-click the tracker bot and click "Copy User ID"
 
 SETTINGS_FILE = "bot_settings.json"
 
-VALID_SEEDS = ["bamboo", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "grape", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon blossom", "dragon's breath"]
+# Included everything from your list + common ones seen in your screenshot
+VALID_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato", "apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon blossom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
 VALID_WEATHER = ["rain", "blizzard", "lightning", "midas", "rainbow moon", "blood moon"]
@@ -52,25 +54,24 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"GAG2 Discord Mirror Active: Logged in as {bot.user.name}")
+    print(f"GAG2 Spy Mirror Connected: Logged in as {bot.user.name}")
 
-# --- THE SPY ENGINE ---
+# --- THE SPY ENGINE (TUNED FOR EMBEDS) ---
 @bot.event
 async def on_message(message):
-    # Process regular bot commands first
     await bot.process_commands(message)
     
-    # Check if the message is coming from the channel we are watching
-    if message.channel.id != WATCH_CHANNEL_ID:
+    # Ignore messages unless they come from the specific channel AND the specific bot
+    if message.channel.id != WATCH_CHANNEL_ID or message.author.id != TRACKER_BOT_USER_ID:
         return
 
     channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
     saved_roles = bot_settings.get("roles", {})
     
-    # Read the text or embed details from the source bot
+    # Start gathering text from the message content and its mentions
     content_text = message.content.lower()
     
-    # If the source bot uses embeds, pull text from the embed instead
+    # Pull data straight out of the dark embed box fields
     if message.embeds:
         embed = message.embeds[0]
         content_text += f" {embed.title if embed.title else ''} {embed.description if embed.description else ''}"
@@ -86,12 +87,13 @@ async def on_message(message):
             if w_id and (w_channel := bot.get_channel(w_id)):
                 w_ping = f"<@&{saved_roles[weather]}>" if weather in saved_roles else ""
                 await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{weather.capitalize()}**", color=discord.Color.blue()))
-                break # Only process one weather event per message
+                break
 
     # 🌱 SEEDS DETECTION
     seed_pings, seed_list_str = [], []
     for seed in VALID_SEEDS:
-        if seed in content_text:
+        # Match whole words to avoid "corn" matching inside longer unassociated words
+        if f" {seed} " in f" {content_text} " or f"- {seed}" in content_text:
             seed_list_str.append(f"• {seed.capitalize()}")
             if seed in saved_roles:
                 seed_pings.append(f"<@&{saved_roles[seed]}>")
