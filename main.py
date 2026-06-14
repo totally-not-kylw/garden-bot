@@ -112,16 +112,35 @@ async def setrole(ctx, *, input_str: str):
     except Exception:
         await ctx.send(f"❌ Error updating role: Verification failed.")
 
-# --- NEW: FORCE TEST COMMAND ---
+# --- NEW: DEBUG API COMMAND ---
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def checkapi(ctx):
+    """Fetches the exact current response from the API for debugging."""
+    await ctx.send("🔍 Fetching live data from the wiki API...")
+    try:
+        response = requests.get(WIKI_API_URL, timeout=10)
+        if response.status_code != 200:
+            await ctx.send(f"❌ API returned an error status code: {response.status_code}")
+            return
+            
+        raw_data = response.text
+        # Limit text length just in case the API response is massive
+        if len(raw_data) > 1900:
+            raw_data = raw_data[:1900] + "\n...[Truncated]"
+            
+        await ctx.send(f"📡 **Raw API Response:**\n```json\n{raw_data}\n```")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to connect to API: {e}")
+
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def test(ctx):
     """Forces a test alert to all configured channels immediately."""
-    await ctx.send("🔄 Sending test alerts to all configured channels...")
+    await ctx.send("🔄 Sending test alerts...")
     channels = bot_settings.get("channels", {})
     saved_roles = bot_settings.get("roles", {})
 
-    # 1. Weather Test
     if channels.get("weather"):
         ch = bot.get_channel(channels["weather"])
         if ch:
@@ -129,7 +148,6 @@ async def test(ctx):
             embed = discord.Embed(title="⛅ Weather Shift Detected! (TEST)", description="The environment has changed to: **Blood Moon**", color=discord.Color.blue())
             await ch.send(content=ping, embed=embed)
 
-    # 2. Seeds Test
     if channels.get("seeds"):
         ch = bot.get_channel(channels["seeds"])
         if ch:
@@ -137,7 +155,6 @@ async def test(ctx):
             embed = discord.Embed(title="🌱 Seed Shop Rotation (TEST)", description="• Bamboo\n• Apple\n• Corn", color=discord.Color.green())
             await ch.send(content=ping, embed=embed)
 
-    # 3. Gear Test
     if channels.get("gear"):
         ch = bot.get_channel(channels["gear"])
         if ch:
@@ -145,7 +162,6 @@ async def test(ctx):
             embed = discord.Embed(title="🛠️ Gear Shop Rotation (TEST)", description="• Trowel\n• Common Sprinkler", color=discord.Color.orange())
             await ch.send(content=ping, embed=embed)
 
-    # 4. Crates Test
     if channels.get("crates"):
         ch = bot.get_channel(channels["crates"])
         if ch:
@@ -171,7 +187,6 @@ async def check_wiki_stock():
         current_shop_gear = data.get("gear", data.get("gears", []))
         current_weather = data.get("weather", "Clear")
 
-        # Weather Run
         if current_weather != LAST_SEEN_WEATHER:
             LAST_SEEN_WEATHER = current_weather
             w_id = channels.get("weather")
@@ -183,11 +198,9 @@ async def check_wiki_stock():
                     embed_w = discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{current_weather}**", color=discord.Color.blue())
                     await w_channel.send(content=w_ping, embed=embed_w)
 
-        # Shop Run
         if current_seeds != LAST_SEEN_SEEDS and current_seeds:
             LAST_SEEN_SEEDS = current_seeds
 
-            # Seeds Channel Posting
             s_id = channels.get("seeds")
             if s_id:
                 s_channel = bot.get_channel(s_id)
@@ -201,7 +214,6 @@ async def check_wiki_stock():
                     embed_s = discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green())
                     await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=embed_s)
 
-            # Split logic for gear/crates arrays
             gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
             for item in current_shop_gear:
                 item_lower = item.lower()
@@ -214,7 +226,6 @@ async def check_wiki_stock():
                     if item_lower in VALID_GEAR and item_lower in saved_roles:
                         gear_pings.append(f"<@&{saved_roles[item_lower]}>")
 
-            # Gear Channel Posting
             g_id = channels.get("gear")
             if g_id and gear_list_str:
                 g_channel = bot.get_channel(g_id)
@@ -222,7 +233,6 @@ async def check_wiki_stock():
                     embed_g = discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange())
                     await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=embed_g)
 
-            # Crates Channel Posting
             c_id = channels.get("crates")
             if c_id and crate_list_str:
                 c_channel = bot.get_channel(c_id)
