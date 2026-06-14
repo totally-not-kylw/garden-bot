@@ -19,6 +19,7 @@ VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arc
 VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "blood moon", "midas"]
 
 ALL_TRACKED_SEEDS = VALID_SEEDS + DISPLAY_ONLY_SEEDS
+ALL_ASSIGNABLE_ITEMS = VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER
 
 # --- EMOJI MAPPING ---
 ITEM_EMOJIS = {
@@ -43,9 +44,12 @@ ITEM_EMOJIS = {
 
 bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
 pending_backup = False 
-ready_to_track = False  # Safety latch to protect data overwrites on startup
+ready_to_track = False  
 
-# --- PORT SERVER (Keep-Alive Endpoint) ---
+# Global dictionary to transiently hold suggested structures before confirmations
+pending_autorole_drafts = {}
+
+# --- PORT SERVER ---
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -65,15 +69,17 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- CENTRALIZED MEMORY ENGINE ---
+# --- MASTER ANTI-WIPE STORAGE ENGINE ---
 async def load_settings_from_discord():
     global bot_settings, ready_to_track
-    print("🔄 Syncing global configuration maps from channel topics...")
+    print("🔄 Initializing Master Database Recovery Engine...")
     await bot.wait_until_ready()
+    await asyncio.sleep(6)  
     
-    # Give Discord connection a moment to fully cache channel properties
-    await asyncio.sleep(5) 
-    
+    found_backup = False
+    temp_channels = {}
+    temp_roles = {}
+
     for guild in bot.guilds:
         for channel in guild.text_channels:
             if channel.topic and "GAG2_DATA:" in channel.topic:
@@ -83,18 +89,23 @@ async def load_settings_from_discord():
                     
                     if "channels" in saved_data:
                         for k, v in saved_data["channels"].items():
-                            if v: bot_settings["channels"][k] = v
+                            if v: temp_channels[k] = v
                     if "roles" in saved_data:
                         for k, v in saved_data["roles"].items():
-                            if v: bot_settings["roles"][k.lower().strip()] = v
-                            
-                    print(f"✅ Full recovery successful! Loaded memory data from #{channel.name}")
-                    ready_to_track = True
-                    return
+                            if v: temp_roles[k.lower().strip()] = v
+                    
+                    found_backup = True
+                    print(f"📖 Located partial or full save registry cluster on channel: #{channel.name}")
                 except Exception as e:
-                    print(f"⚠️ Error reading backup on #{channel.name}: {e}")
-    
-    print("⚠️ No backup data found. Starting with a clean configuration profile.")
+                    print(f"⚠️ Error processing text stream on channel #{channel.name}: {e}")
+
+    if found_backup:
+        bot_settings["channels"].update(temp_channels)
+        bot_settings["roles"].update(temp_roles)
+        print(f"✅ Recovery engine execution complete. Restored {len(bot_settings['roles'])} data points.")
+    else:
+        print("⚠️ Recovery loop finished. No serialized configuration records found in layout.")
+
     ready_to_track = True
 
 @tasks.loop(minutes=1)
@@ -150,7 +161,6 @@ async def on_ready():
 @tasks.loop(seconds=10)
 async def check_wiki_stock():
     global bot_settings, ready_to_track
-    # Absolute safety stop: Do not scan or output stock until the cloud data has finished loading
     if not ready_to_track:
         return
         
@@ -255,26 +265,17 @@ async def execute_setchannel(category: str, channel: discord.TextChannel):
     return "❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`."
 
 async def execute_setrole(item_name: str, role: discord.Role):
-    global pending_backup
+    global pending_backup, ready_to_track
+    if not ready_to_track:
+        return "❌ Storage engine is busy starting up. Please wait 5 seconds."
     item_lower = item_name.strip().lower()
     if item_lower in DISPLAY_ONLY_SEEDS:
         return f"❌ Role assignment disabled for `{item_name}`. This item is configured for display only."
-    if item_lower not in (VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER):
+    if item_lower not in ALL_ASSIGNABLE_ITEMS:
         return f"❌ `{item_name}` is not recognized in tracking lists."
     bot_settings["roles"][item_lower] = role.id
     pending_backup = True
     return f"✅ Pings for **{item_name}** bound to {role.mention}!"
-
-async def execute_test(guild):
-    channels = bot_settings.get("channels", {})
-    for cat, name, item, col in [("weather", "⛅ Weather Alert! (TEST)", "Blood Moon 🔴", discord.Color.blue()),
-                                 ("seeds", "🌱 Seed Stock! (TEST)", "• Bamboo 🎋 **(x2)**", discord.Color.green()),
-                                 ("gear", "🛠️ Gear Stock! (TEST)", "• Trowel 🥄 **(x1)**", discord.Color.orange()),
-                                 ("crates", "📦 Crate Shop! (TEST)", "• Ladder Crate 🪜 **(x3)**", discord.Color.gold())]:
-        if channels.get(cat):
-            ch = guild.get_channel(channels[cat])
-            if ch:
-                await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
 
 def execute_unassigned():
     saved_roles = bot_settings.get("roles", {})
@@ -293,7 +294,69 @@ def execute_unassigned():
     if unassigned_weather: embed.add_field(name="⛅ Weather", value="\n".join([f"• {w.title()} {ITEM_EMOJIS.get(w, '')}" for w in unassigned_weather]), inline=False)
     return embed
 
-# --- DISCORD SLASH & PREFIX COMMANDS ---
+# --- 🚀 AUTOMATED INTELLIGENT MATCHING CONTROLLERS ---
+def execute_autoroles_discovery(guild: discord.Guild):
+    """Scans server role strings and attempts to match closest items."""
+    global pending_autorole_drafts
+    
+    draft_matches = {}
+    matched_lines = []
+    
+    # Simple clean lower token analyzer
+    for item in ALL_ASSIGNABLE_ITEMS:
+        best_role = None
+        item_clean = item.replace(" crate", "").replace(" sprinkler", "").strip()
+        
+        for role in guild.roles:
+            role_name_lower = role.name.lower().strip()
+            # Direct match or containment match
+            if role_name_lower == item or role_name_lower == item_clean or item_clean in role_name_lower or role_name_lower in item:
+                best_role = role
+                break
+                
+        if best_role and not best_role.is_default():
+            draft_matches[item] = best_role.id
+            emoji = ITEM_EMOJIS.get(item, "🔹")
+            matched_lines.append(f"• **{item.title()}** {emoji} ➡️ {best_role.mention}")
+
+    if not matched_lines:
+        embed = discord.Embed(
+            title="🔍 Auto-Role Finder Results",
+            description="I scanned all roles in this server but couldn't find any role names matching the items on my tracking list.\n\nMake sure your roles are named similarly to the items (e.g., a role named `Midas` or `Bamboo`).",
+            color=discord.Color.orange()
+        )
+        return embed, False
+
+    # Store discovery layout temporarily indexed by unique server id
+    pending_autorole_drafts[guild.id] = draft_matches
+
+    embed = discord.Embed(
+        title="🤖 Auto-Role Matcher Proposals",
+        description="I found the following matching roles in your server layout!\n\n**Review the proposed pairings below:**\n\n" + "\n".join(matched_lines) + "\n\n**To complete setup:**\nType **`!approve`** or `/approve` to save all mappings.\nType **`!deny`** or `/deny` to cancel.",
+        color=discord.Color.blurple()
+    )
+    return embed, True
+
+def execute_approve_draft(guild_id: int):
+    global bot_settings, pending_backup, pending_autorole_drafts
+    draft = pending_autorole_drafts.get(guild_id)
+    if not draft:
+        return "❌ There is no active auto-role draft pending approval. Run `!autoroles` first!"
+        
+    bot_settings["roles"].update(draft)
+    del pending_autorole_drafts[guild_id]
+    pending_backup = True
+    return f"✅ **Success!** Automatically bound and saved {len(draft)} tracking roles into the database database structure!"
+
+def execute_deny_draft(guild_id: int):
+    global pending_autorole_drafts
+    if guild_id in pending_autorole_drafts:
+        del pending_autorole_drafts[guild_id]
+        return "🗑️ Proposed auto-role pairing proposal draft rejected and deleted successfully."
+    return "❌ No draft proposal currently active to clear."
+
+
+# --- DISCORD SLASH COMMAND INTERFACES ---
 @bot.tree.command(name="setchannel")
 async def slash_setchannel(interaction: discord.Interaction, category: str, channel: discord.TextChannel):
     if not interaction.user.guild_permissions.manage_channels: return
@@ -304,17 +367,31 @@ async def slash_setrole(interaction: discord.Interaction, item_name: str, role: 
     if not interaction.user.guild_permissions.manage_roles: return
     await interaction.response.send_message(await execute_setrole(item_name, role))
 
-@bot.tree.command(name="test")
-async def slash_test(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_channels: return
-    await interaction.response.send_message("🔄 Processing mock diagnostic alerts...")
-    await execute_test(interaction.guild)
-
 @bot.tree.command(name="unassigned")
 async def slash_unassigned(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
     await interaction.response.send_message(embed=execute_unassigned())
 
+@bot.tree.command(name="autoroles", description="Automatically scan and match existing server roles to tracking list items.")
+async def slash_autoroles(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message("❌ Missing clearance: Manage Roles requirement.", ephemeral=True)
+        return
+    embed, _ = execute_autoroles_discovery(interaction.guild)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="approve", description="Approve the currently pending auto-roles pairing configuration draft.")
+async def slash_approve(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_roles: return
+    await interaction.response.send_message(execute_approve_draft(interaction.guild_id))
+
+@bot.tree.command(name="deny", description="Reject and cancel the active auto-roles draft setup proposal.")
+async def slash_deny(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_roles: return
+    await interaction.response.send_message(execute_deny_draft(interaction.guild_id))
+
+
+# --- DISCORD PREFIX COMMAND INTERFACES ---
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def setchannel(ctx, category: str, channel: discord.TextChannel):
@@ -331,13 +408,36 @@ async def setrole(ctx, *, input_str: str):
         await ctx.send("❌ Error updating role: Verification failed.")
 
 @bot.command()
-@commands.has_permissions(manage_channels=True)
-async def test(ctx):
-    await execute_test(ctx.guild)
-
-@bot.command()
 @commands.has_permissions(manage_roles=True)
 async def unassigned(ctx):
     await ctx.send(embed=execute_unassigned())
+
+@bot.command(name="autoroles")
+@commands.has_permissions(manage_roles=True)
+async def cmd_autoroles(ctx):
+    embed, _ = execute_autoroles_discovery(ctx.guild)
+    await ctx.send(embed=embed)
+
+@bot.command(name="approve")
+@commands.has_permissions(manage_roles=True)
+async def cmd_approve(ctx):
+    await ctx.send(execute_approve_draft(ctx.guild.id))
+
+@bot.command(name="deny")
+@commands.has_permissions(manage_roles=True)
+async def cmd_deny(ctx):
+    await ctx.send(execute_deny_draft(ctx.guild.id))
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def test(ctx):
+    channels = bot_settings.get("channels", {})
+    for cat, name, item, col in [("weather", "⛅ Weather Alert! (TEST)", "Blood Moon 🔴", discord.Color.blue()),
+                                 ("seeds", "🌱 Seed Stock! (TEST)", "• Bamboo 🎋 **(x2)**", discord.Color.green()),
+                                 ("gear", "🛠️ Gear Stock! (TEST)", "• Trowel 🥄 **(x1)**", discord.Color.orange()),
+                                 ("crates", "📦 Crate Shop! (TEST)", "• Ladder Crate 🪜 **(x3)**", discord.Color.gold())]:
+        if channels.get(cat):
+            ch = ctx.guild.get_channel(channels[cat])
+            if ch: await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
 
 bot.run(TOKEN)
