@@ -3,15 +3,34 @@ from discord.ext import commands, tasks
 import requests
 import os
 import asyncio
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1378839178674176020  # Your exact channel ID plugged in!
-WIKI_API_URL = "https://growagarden2wiki.net/api/stock" # The data endpoint for the wiki's tracker
+CHANNEL_ID = 1378839178674176020
+WIKI_API_URL = "https://growagarden2wiki.net/api/stock"
 
-# To avoid sending duplicate notifications for the same shop cycle
 LAST_SEEN_SEEDS = []
 
+# --- FAKE WEB SERVER TO TRICK RENDER PORT BINDING ---
+class HealthCheckServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_health_server():
+    # Render automatically tells apps what port to use via the PORT environment variable
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
+    server.serve_forever()
+
+# Start the fake web server in a background thread
+threading.Thread(target=run_health_server, daemon=True).start()
+
+# --- DISCORD BOT CODE ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -19,7 +38,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"GAG2 Tracker Active: Logged in as {bot.user.name}")
-    # Start the background loop that checks the wiki every 30 seconds
     check_wiki_stock.start()
 
 @tasks.loop(seconds=30)
@@ -30,36 +48,30 @@ async def check_wiki_stock():
         return
 
     try:
-        # Request data from the Wiki's stock database
         response = requests.get(WIKI_API_URL, timeout=10)
         if response.status_code != 200:
             return
             
         data = response.json()
-        
-        # Pull the items from the wiki data payload
         current_seeds = data.get("seeds", [])
         current_gear = data.get("gear", data.get("gears", []))
         current_weather = data.get("weather", "Clear")
         
-        # If the seeds haven't changed, the shop hasn't restocked yet. Skip it.
         if current_seeds == LAST_SEEN_SEEDS or not current_seeds:
             return
             
-        LAST_SEEN_SEEDS = current_seeds # Update our history tracker
+        LAST_SEEN_SEEDS = current_seeds
         
-        # Create the Discord Alert Message
         embed = discord.Embed(
             title="🌳 Grow a Garden 2 Stock Alert! 🌳", 
             color=discord.Color.brand_green(),
-            url="https://growagarden2wiki.net/stock/" # Links back to your source website
+            url="https://growagarden2wiki.net/stock/"
         )
         embed.add_field(name="⛅ Current Weather", value=current_weather, inline=False)
         embed.add_field(name="🌱 New Seeds", value=", ".join(current_seeds), inline=True)
         embed.add_field(name="🛠️ New Gear", value=", ".join(current_gear), inline=True)
         embed.set_footer(text="Data fetched from growagarden2wiki.net")
         
-        # Custom logic: Edit these keywords based on what pings you want
         ping_content = ""
         rare_keywords = ["Super", "Mythic", "Divine", "Golden", "Prismatic", "Beanstalk"]
         
