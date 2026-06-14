@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-import requests
+import cloudscraper
 import os
 import threading
 import json
@@ -10,26 +10,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = os.getenv("DISCORD_TOKEN")
 WIKI_API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
-# Advanced headers to fully mimic a real, interactive web browser
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Origin": "https://growagarden2wiki.net",
-    "Referer": "https://growagarden2wiki.net/",
-    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site"
-}
-
 LAST_SEEN_SEEDS = []
 LAST_SEEN_WEATHER = None
 SETTINGS_FILE = "bot_settings.json"
+
+# Initialize the Cloudflare-bypassing scraper
+scraper = cloudscraper.create_scraper()
 
 VALID_SEEDS = [
     "bamboo", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", 
@@ -133,10 +119,11 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
-    """Fetches the exact current response from the API for debugging."""
-    await ctx.send("🔍 Fetching live data from the wiki API with browser-profile headers...")
+    """Fetches the exact current response using Cloudscraper."""
+    await ctx.send("🔍 Cracking Cloudflare protection to fetch live data...")
     try:
-        response = requests.get(WIKI_API_URL, headers=HEADERS, timeout=10)
+        # Using cloudscraper instead of standard requests
+        response = scraper.get(WIKI_API_URL, timeout=15)
         if response.status_code != 200:
             await ctx.send(f"❌ API returned an error status code: {response.status_code}")
             return
@@ -147,7 +134,7 @@ async def checkapi(ctx):
             
         await ctx.send(f"📡 **Raw API Response:**\n```json\n{raw_data}\n```")
     except Exception as e:
-        await ctx.send(f"❌ Failed to connect to API: {e}")
+        await ctx.send(f"❌ Cloudscraper failed to bypass block: {e}")
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
@@ -195,7 +182,7 @@ async def check_wiki_stock():
     saved_roles = bot_settings.get("roles", {})
 
     try:
-        response = requests.get(WIKI_API_URL, headers=HEADERS, timeout=10)
+        response = scraper.get(WIKI_API_URL, timeout=15)
         if response.status_code != 200:
             return
         data = response.json()
