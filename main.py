@@ -46,6 +46,7 @@ ITEM_EMOJIS = {
 
 # Master runtime memory configuration
 bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
+pending_backup = False  # Track changes to avoid hitting Discord's strict channel topic rate limits
 
 # --- PORT SCANNER FIX (For Cloud Hosting) ---
 class HealthCheckServer(BaseHTTPRequestHandler):
@@ -67,7 +68,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- MEMORY SYNC ENGINE (DYNAMIC CLOUD TOPIC METHOD) ---
+# --- MEMORY SYNC ENGINE ---
 async def load_settings_from_discord():
     """Scans channel descriptions globally to reconstruct mappings after platform updates."""
     global bot_settings
@@ -87,9 +88,13 @@ async def load_settings_from_discord():
                 except Exception:
                     pass
 
-async def save_settings_to_discord():
-    """Serializes configurations and saves them directly to an active channel topic description."""
-    global bot_settings
+@tasks.loop(minutes=2)
+async def dynamic_cloud_backup_loop():
+    """Periodically commits configurations to Discord channel topics safely without blocking commands."""
+    global bot_settings, pending_backup
+    if not pending_backup:
+        return
+
     for cat, ch_id in bot_settings["channels"].items():
         if ch_id:
             channel = bot.get_channel(ch_id)
@@ -109,16 +114,20 @@ async def save_settings_to_discord():
                 
                 try:
                     await channel.edit(topic=new_topic)
-                    return  # Successfully cluster backed up to one working configuration channel
+                    print("💾 Background backup committed to channel topic safely.")
+                    pending_backup = False
+                    return  # Success
                 except discord.Forbidden:
-                    print(f"⚠️ Bot doesn't have permissions to write topic metadata on #{channel.name}")
+                    pass
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        print("⚠️ Channel topic sync postponed: Discord rate limit encountered.")
 
 @bot.event
 async def on_ready():
     print(f"✅ Success! GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
     await load_settings_from_discord()
     
-    # Sync hybrid app commands tree globally
     try:
         synced = await bot.tree.sync()
         print(f"⚡ Global application slash command tree synchronized! ({len(synced)} Slash Commands Ready)")
@@ -126,6 +135,7 @@ async def on_ready():
         print(f"⚠️ Application command sync failure: {e}")
         
     check_wiki_stock.start()
+    dynamic_cloud_backup_loop.start()
 
 # --- THE WIKI API ENGINE ---
 @tasks.loop(seconds=10)
@@ -235,22 +245,24 @@ async def check_wiki_stock():
     except Exception as e:
         print(f"Error reading live wiki api: {e}")
 
-# --- REUSABLE BACKEND FUNCTIONS (Powers both Command Methods) ---
+# --- BACKEND REUSABLE CONTROLLERS ---
 async def execute_setchannel(category: str, channel: discord.TextChannel):
+    global pending_backup
     category = category.lower().strip()
     if category in ["weather", "seeds", "gear", "crates"]:
         bot_settings["channels"][category] = channel.id
-        await save_settings_to_discord()
-        return f"✅ **{category.capitalize()}** alerts will now be posted in {channel.mention}!"
+        pending_backup = True  # Queues the save to happen in the background
+        return f"✅ **{category.capitalize()}** alerts mapped to {channel.mention}! Data will sync momentarily."
     return "❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`."
 
 async def execute_setrole(item_name: str, role: discord.Role):
+    global pending_backup
     item_lower = item_name.strip().lower()
     if item_lower not in (VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER):
         return f"❌ `{item_name}` is not recognized in tracking lists."
     bot_settings["roles"][item_lower] = role.id
-    await save_settings_to_discord()
-    return f"✅ Pings for **{item_name}** will now ping {role.mention}!"
+    pending_backup = True  # Queues the save to happen in the background
+    return f"✅ Pings for **{item_name}** bound to {role.mention}!"
 
 async def execute_test(guild):
     channels = bot_settings.get("channels", {})
@@ -263,7 +275,7 @@ async def execute_test(guild):
             if ch:
                 await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
 
-# --- DISCORD TYPE 1: SLASH COMMAND IMPLEMENTATIONS ---
+# --- DISCORD TYPE 1: SLASH COMMANDS ---
 @bot.tree.command(name="setchannel", description="Map a category alert feed to a specific text channel.")
 @app_commands.describe(category="Use: weather, seeds, gear, or crates", channel="The channel destination")
 async def slash_setchannel(interaction: discord.Interaction, category: str, channel: discord.TextChannel):
@@ -290,7 +302,7 @@ async def slash_test(interaction: discord.Interaction):
     await interaction.response.send_message("🔄 Processing mock diagnostic alerts...")
     await execute_test(interaction.guild)
 
-# --- DISCORD TYPE 2: ORIGINAL PREFIX COMMANDS (!) ---
+# --- DISCORD TYPE 2: PREFIX COMMANDS (!) ---
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def setchannel(ctx, category: str, channel: discord.TextChannel):
