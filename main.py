@@ -42,7 +42,12 @@ def load_settings():
         with open(SETTINGS_FILE, "r") as f:
             return json.load(f)
     return {
-        "channel_id": None,
+        "channels": {
+            "weather": None,
+            "seeds": None,
+            "gear": None,
+            "crates": None
+        },
         "roles": {}  # Stores item_name: role_id mapping
     }
 
@@ -77,14 +82,22 @@ async def on_ready():
     print(f"GAG2 Multi-Tracker Active: Logged in as {bot.user.name}")
     check_wiki_stock.start()
 
-# --- IN-SERVER COMMAND TO SET CHANNEL ---
+# --- IN-SERVER COMMAND TO SET INDIVIDUAL CHANNELS ---
 @bot.command()
 @commands.has_permissions(manage_channels=True)
-async def setchannel(ctx, channel: discord.TextChannel):
-    """Sets the channel where alerts are posted."""
-    bot_settings["channel_id"] = channel.id
-    save_settings(bot_settings)
-    await ctx.send(f"✅ Target tracker channel saved to {channel.mention}!")
+async def setchannel(ctx, category: str, channel: discord.TextChannel):
+    """Sets a specific channel for a category. Usage: !setchannel seeds #seed-alerts"""
+    category = category.lower()
+    if category in ["weather", "seeds", "gear", "crates"]:
+        # Ensure the channels dictionary exists in settings
+        if "channels" not in bot_settings:
+            bot_settings["channels"] = {"weather": None, "seeds": None, "gear": None, "crates": None}
+            
+        bot_settings["channels"][category] = channel.id
+        save_settings(bot_settings)
+        await ctx.send(f"✅ **{category.capitalize()}** alerts will now be posted in {channel.mention}!")
+    else:
+        await ctx.send("❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`.\nExample: `!setchannel seeds #seed-tracker`")
 
 # --- IN-SERVER COMMAND TO SET SPECIFIC ITEM ROLES ---
 @bot.command()
@@ -92,7 +105,6 @@ async def setchannel(ctx, channel: discord.TextChannel):
 async def setrole(ctx, *, input_str: str):
     """Assigns a role to a specific item. Usage: !setrole Bamboo @RoleName"""
     try:
-        # Split input into the item name and the role mention
         parts = input_str.rsplit(" ", 1)
         if len(parts) < 2:
             await ctx.send("❌ Format error! Use: `!setrole [Item Name] [@Role]`")
@@ -101,7 +113,6 @@ async def setrole(ctx, *, input_str: str):
         item_name = parts[0].strip().lower()
         role_mention = parts[1].strip()
         
-        # Check if the role is valid
         role = await commands.RoleConverter().convert(ctx, role_mention)
         
         all_valid_items = VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER
@@ -121,11 +132,8 @@ async def setrole(ctx, *, input_str: str):
 async def check_wiki_stock():
     global LAST_SEEN_SEEDS, LAST_SEEN_WEATHER
     
-    if not bot_settings["channel_id"]:
-        return
-    channel = bot.get_channel(bot_settings["channel_id"])
-    if not channel:
-        return
+    channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
+    saved_roles = bot_settings.get("roles", {})
 
     try:
         response = requests.get(WIKI_API_URL, timeout=10)
@@ -136,43 +144,47 @@ async def check_wiki_stock():
         current_seeds = data.get("seeds", [])
         current_shop_gear = data.get("gear", data.get("gears", []))
         current_weather = data.get("weather", "Clear")
-        
-        saved_roles = bot_settings.get("roles", {})
 
-        # 1. WEATHER TRACKING (Triggers immediately when weather changes state)
+        # 1. WEATHER TRACKING
         if current_weather != LAST_SEEN_WEATHER:
             LAST_SEEN_WEATHER = current_weather
-            weather_lower = current_weather.lower()
             
-            w_ping = ""
-            if weather_lower in VALID_WEATHER and weather_lower in saved_roles:
-                w_ping = f"<@&{saved_roles[weather_lower]}>"
-                
-            embed_w = discord.Embed(
-                title="⛅ Weather Shift Detected!", 
-                description=f"The environment has changed to: **{current_weather}**", 
-                color=discord.Color.blue()
-            )
-            await channel.send(content=w_ping, embed=embed_w)
+            w_channel_id = channels.get("weather")
+            if w_channel_id:
+                w_channel = bot.get_channel(w_channel_id)
+                if w_channel:
+                    weather_lower = current_weather.lower()
+                    w_ping = f"<@&{saved_roles[weather_lower]}>" if (weather_lower in VALID_WEATHER and weather_lower in saved_roles) else ""
+                    
+                    embed_w = discord.Embed(
+                        title="⛅ Weather Shift Detected!", 
+                        description=f"The environment has changed to: **{current_weather}**", 
+                        color=discord.Color.blue()
+                    )
+                    await w_channel.send(content=w_ping, embed=embed_w)
 
         # 2. SEED & GEAR ROTATION TRACKING
         if current_seeds != LAST_SEEN_SEEDS and current_seeds:
             LAST_SEEN_SEEDS = current_seeds
 
-            # Compile Seed Messages & Pings
-            seed_pings = []
-            seed_list_str = []
-            for seed in current_seeds:
-                seed_lower = seed.lower()
-                seed_list_str.append(f"• {seed}")
-                if seed_lower in VALID_SEEDS and seed_lower in saved_roles:
-                    seed_pings.append(f"<@&{saved_roles[seed_lower]}>")
-            
-            embed_s = discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green())
-            s_ping_content = " ".join(set(seed_pings)) if seed_pings else ""
-            await channel.send(content=s_ping_content, embed=embed_s)
+            # SEEDS CHANNEL
+            s_channel_id = channels.get("seeds")
+            if s_channel_id:
+                s_channel = bot.get_channel(s_channel_id)
+                if s_channel:
+                    seed_pings = []
+                    seed_list_str = []
+                    for seed in current_seeds:
+                        seed_lower = seed.lower()
+                        seed_list_str.append(f"• {seed}")
+                        if seed_lower in VALID_SEEDS and seed_lower in saved_roles:
+                            seed_pings.append(f"<@&{saved_roles[seed_lower]}>")
+                    
+                    embed_s = discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green())
+                    s_ping_content = " ".join(set(seed_pings)) if seed_pings else ""
+                    await s_channel.send(content=s_ping_content, embed=embed_s)
 
-            # Separate Gear vs Crates from the main gear pool
+            # Separate Gear vs Crates arrays
             gear_pings = []
             crate_pings = []
             gear_list_str = []
@@ -189,20 +201,26 @@ async def check_wiki_stock():
                     if item_lower in VALID_GEAR and item_lower in saved_roles:
                         gear_pings.append(f"<@&{saved_roles[item_lower]}>")
 
-            # Send Gear Embed (If items exist)
-            if gear_list_str:
-                embed_g = discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange())
-                g_ping_content = " ".join(set(gear_pings)) if gear_pings else ""
-                await channel.send(content=g_ping_content, embed=embed_g)
+            # GEAR CHANNEL
+            g_channel_id = channels.get("gear")
+            if g_channel_id and gear_list_str:
+                g_channel = bot.get_channel(g_channel_id)
+                if g_channel:
+                    embed_g = discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange())
+                    g_ping_content = " ".join(set(gear_pings)) if gear_pings else ""
+                    await g_channel.send(content=g_ping_content, embed=embed_g)
 
-            # Send Crates Embed (If items exist)
-            if crate_list_str:
-                embed_c = discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold())
-                c_ping_content = " ".join(set(crate_pings)) if crate_pings else ""
-                await channel.send(content=c_ping_content, embed=embed_c)
+            # CRATES CHANNEL
+            c_channel_id = channels.get("crates")
+            if c_channel_id and crate_list_str:
+                c_channel = bot.get_channel(c_channel_id)
+                if c_channel:
+                    embed_c = discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold())
+                    c_ping_content = " ".join(set(crate_pings)) if crate_pings else ""
+                    await c_channel.send(content=c_ping_content, embed=embed_c)
 
     except Exception as e:
-        print(f"Error reading stock configurations: {e}")
+        print(f"Error executing stock update: {e}")
 
 @check_wiki_stock.before_loop
 async def before_check():
