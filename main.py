@@ -61,33 +61,55 @@ async def on_ready():
     print(f"GAG2 Multi-Tracker Active: Logged in as {bot.user.name}")
     check_wiki_stock.start()
 
-# Helper function to scrape and extract Next.js embedded state data
+# --- NEW: RECURSIVE DEEP SEARCH ---
+def deep_search_stock(data):
+    """Recursively hunts through every nested dict/list to find the game data."""
+    if isinstance(data, dict):
+        # We hit the jackpot if a dictionary contains 'seeds' or 'weather'
+        if "seeds" in data or "weather" in data:
+            return data
+        
+        # Otherwise, keep digging deeper into the dictionary
+        for key, value in data.items():
+            result = deep_search_stock(value)
+            if result:
+                return result
+                
+    elif isinstance(data, list):
+        # Dig through every item in a list
+        for item in data:
+            result = deep_search_stock(item)
+            if result:
+                return result
+    return None
+
 def fetch_live_game_data():
     try:
         response = requests.get(WIKI_HOME_URL, headers=HEADERS, timeout=12)
         if response.status_code != 200:
-            return None
+            return None, f"HTTP Error {response.status_code}"
             
         soup = BeautifulSoup(response.text, 'html.parser')
         next_data_script = soup.find('script', id='__NEXT_DATA__')
         
         if next_data_script:
             payload = json.loads(next_data_script.string)
-            # Drill down into the Next.js page properties layout
-            page_props = payload.get("props", {}).get("pageProps", {})
+            stock_data = deep_search_stock(payload)
             
-            # Fallback path if data is nested inside a 'stock' key or directly in props
-            stock_data = page_props.get("stock", page_props)
             if stock_data:
                 return {
                     "seeds": stock_data.get("seeds", []),
                     "gear": stock_data.get("gear", stock_data.get("gears", [])),
                     "weather": stock_data.get("weather", "Clear")
-                }
-        return None
+                }, None
+            else:
+                # If the deep search fails, grab the top level keys to debug
+                top_keys = list(payload.keys())
+                props_keys = list(payload.get("props", {}).keys())
+                return None, f"Deep search failed. Top keys: {top_keys} | Props keys: {props_keys}"
+        return None, "No __NEXT_DATA__ script found in HTML."
     except Exception as e:
-        print(f"Extraction error: {e}")
-        return None
+        return None, str(e)
 
 # --- SETUP COMMANDS ---
 @bot.command()
@@ -128,12 +150,13 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
-    await ctx.send("🔍 Attempting to parse text data directly out of UI layout...")
-    data = fetch_live_game_data()
+    await ctx.send("🔍 Running recursive deep search on the Wiki UI...")
+    data, error = fetch_live_game_data()
     if data:
+        # If the deep search worked, show the exact JSON it pulled
         await ctx.send(f"📡 **Extracted live elements successfully!**\n```json\n{json.dumps(data, indent=2)}\n```")
     else:
-        await ctx.send("❌ Could not parse the Next.js hidden properties map on the main page.")
+        await ctx.send(f"❌ **Search Report:**\n{error}")
 
 # --- TEST COMMAND ---
 @bot.command()
@@ -160,7 +183,7 @@ async def check_wiki_stock():
     channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
     saved_roles = bot_settings.get("roles", {})
 
-    data = fetch_live_game_data()
+    data, error = fetch_live_game_data()
     if not data:
         return
 
@@ -168,7 +191,6 @@ async def check_wiki_stock():
     current_shop_gear = data.get("gear", [])
     current_weather = data.get("weather", "Clear")
 
-    # 1. Weather Update Loop
     if current_weather != LAST_SEEN_WEATHER:
         LAST_SEEN_WEATHER = current_weather
         w_id = channels.get("weather")
@@ -177,7 +199,6 @@ async def check_wiki_stock():
             w_ping = f"<@&{saved_roles[w_lower]}>" if (w_lower in VALID_WEATHER and w_lower in saved_roles) else ""
             await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{current_weather}**", color=discord.Color.blue()))
 
-    # 2. Rotation Loop
     if current_seeds != LAST_SEEN_SEEDS and current_seeds:
         LAST_SEEN_SEEDS = current_seeds
 
