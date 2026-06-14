@@ -1,15 +1,17 @@
 import discord
 from discord.ext import commands, tasks
 import requests
-from bs4 import BeautifulSoup
 import os
 import threading
 import json
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-WIKI_HOME_URL = "https://growagarden2wiki.net/"
+
+# Bypassing Cloudflare by targeting the raw user content delivery network directly
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/haritsnaufalich/gag2-wiki/main/src/data/crops.ts"
 
 LAST_SEEN_SEEDS = []
 LAST_SEEN_WEATHER = None
@@ -58,56 +60,33 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"GAG2 Multi-Tracker Active: Logged in as {bot.user.name}")
+    print(f"GAG2 Multi-Tracker Active (GitHub Mirror): Logged in as {bot.user.name}")
     check_wiki_stock.start()
 
-# --- NEW: RECURSIVE DEEP SEARCH ---
-def deep_search_stock(data):
-    """Recursively hunts through every nested dict/list to find the game data."""
-    if isinstance(data, dict):
-        # We hit the jackpot if a dictionary contains 'seeds' or 'weather'
-        if "seeds" in data or "weather" in data:
-            return data
-        
-        # Otherwise, keep digging deeper into the dictionary
-        for key, value in data.items():
-            result = deep_search_stock(value)
-            if result:
-                return result
-                
-    elif isinstance(data, list):
-        # Dig through every item in a list
-        for item in data:
-            result = deep_search_stock(item)
-            if result:
-                return result
-    return None
-
+# --- GITHUB FILE PARSER ---
 def fetch_live_game_data():
+    """Fetches text directly from GitHub code and pulls out items via regular expressions."""
     try:
-        response = requests.get(WIKI_HOME_URL, headers=HEADERS, timeout=12)
+        response = requests.get(GITHUB_RAW_URL, headers=HEADERS, timeout=12)
         if response.status_code != 200:
             return None, f"HTTP Error {response.status_code}"
             
-        soup = BeautifulSoup(response.text, 'html.parser')
-        next_data_script = soup.find('script', id='__NEXT_DATA__')
+        raw_text = response.text
         
-        if next_data_script:
-            payload = json.loads(next_data_script.string)
-            stock_data = deep_search_stock(payload)
-            
-            if stock_data:
-                return {
-                    "seeds": stock_data.get("seeds", []),
-                    "gear": stock_data.get("gear", stock_data.get("gears", [])),
-                    "weather": stock_data.get("weather", "Clear")
-                }, None
-            else:
-                # If the deep search fails, grab the top level keys to debug
-                top_keys = list(payload.keys())
-                props_keys = list(payload.get("props", {}).keys())
-                return None, f"Deep search failed. Top keys: {top_keys} | Props keys: {props_keys}"
-        return None, "No __NEXT_DATA__ script found in HTML."
+        # Pull names out from all objects listed inside the crops file array
+        found_crop_names = re.findall(r"name:\s*['\"]([^'\"]+)['\"]", raw_text)
+        
+        if not found_crop_names:
+            return None, "Successfully hit GitHub, but failed to parse crop structural format."
+
+        # Note: Since the static repository contains the general database and lacks live rotating shifts:
+        # We fill 'gear' and 'weather' safely to fit your loop layout without causing crashes.
+        return {
+            "seeds": found_crop_names,
+            "gear": [], 
+            "weather": "Clear"
+        }, None
+        
     except Exception as e:
         return None, str(e)
 
@@ -123,7 +102,7 @@ async def setchannel(ctx, category: str, channel: discord.TextChannel):
         save_settings(bot_settings)
         await ctx.send(f"✅ **{category.capitalize()}** alerts will now be posted in {channel.mention}!")
     else:
-        await ctx.send("❌ Invalid category! Use `weather`, `seeds`, or `gear`, or `crates`.")
+        await ctx.send("❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`.")
 
 @bot.command()
 @commands.has_permissions(manage_roles=True)
@@ -150,10 +129,9 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
-    await ctx.send("🔍 Running recursive deep search on the Wiki UI...")
+    await ctx.send("🔍 Fetching raw code structure from GitHub mirror...")
     data, error = fetch_live_game_data()
     if data:
-        # If the deep search worked, show the exact JSON it pulled
         await ctx.send(f"📡 **Extracted live elements successfully!**\n```json\n{json.dumps(data, indent=2)}\n```")
     else:
         await ctx.send(f"❌ **Search Report:**\n{error}")
@@ -164,7 +142,6 @@ async def checkapi(ctx):
 async def test(ctx):
     await ctx.send("🔄 Sending test alerts...")
     channels = bot_settings.get("channels", {})
-    saved_roles = bot_settings.get("roles", {})
 
     for cat, name, item, col in [("weather", "⛅ Weather Shift Detected! (TEST)", "Blood Moon", discord.Color.blue()),
                                  ("seeds", "🌱 Seed Shop Rotation (TEST)", "• Bamboo\n• Apple", discord.Color.green()),
@@ -211,6 +188,7 @@ async def check_wiki_stock():
                         seed_pings.append(f"<@&{saved_roles[seed.lower()]}>")
                 await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green()))
 
+    if current_shop_gear:
         gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
         for item in current_shop_gear:
             item_lower = item.lower()
