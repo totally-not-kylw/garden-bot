@@ -10,9 +10,21 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = os.getenv("DISCORD_TOKEN")
 WIKI_API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
-# Fake browser headers to bypass 403 Forbidden blocks
+# Advanced headers to fully mimic a real, interactive web browser
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Origin": "https://growagarden2wiki.net",
+    "Referer": "https://growagarden2wiki.net/",
+    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site"
 }
 
 LAST_SEEN_SEEDS = []
@@ -122,7 +134,7 @@ async def setrole(ctx, *, input_str: str):
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
     """Fetches the exact current response from the API for debugging."""
-    await ctx.send("🔍 Fetching live data from the wiki API with custom headers...")
+    await ctx.send("🔍 Fetching live data from the wiki API with browser-profile headers...")
     try:
         response = requests.get(WIKI_API_URL, headers=HEADERS, timeout=10)
         if response.status_code != 200:
