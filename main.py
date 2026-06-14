@@ -47,7 +47,6 @@ bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crat
 pending_backup = False 
 ready_to_track = False  
 
-# Draft state tracker: maps guild_id -> {"matches": {item: role_id}, "last_msg_id": msg_id}
 pending_autorole_drafts = {}
 
 # --- PORT SERVER ---
@@ -74,23 +73,30 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 def clean_string(s: str) -> str:
     """Removes emojis, punctuation, common filler words, and excess whitespace."""
     s = s.lower()
-    s = re.sub(r'[^\w\s\']', '', s) # Strip emojis/symbols but keep apostrophes
-    s = re.sub(r'\b(ping|role|alert|feed|tracker|bot|pings|roles)\b', '', s) # Strip noise words
+    s = re.sub(r'[^\w\s\']', '', s) 
+    s = re.sub(r'\b(ping|role|alert|feed|tracker|bot|pings|roles|weather|status)\b', '', s) 
     return " ".join(s.split())
 
 def calculate_match_score(item: str, role_name: str) -> float:
-    """Computes a string intersection match score between 0.0 and 1.0."""
-    item_tokens = set(clean_string(item).split())
-    role_tokens = set(clean_string(role_name).split())
+    """Computes an intersection match score with strong word-boundary substring support."""
+    cleaned_item = clean_string(item)
+    cleaned_role = clean_string(role_name)
     
-    if not item_tokens or not role_tokens:
+    if not cleaned_item or not cleaned_role:
         return 0.0
         
-    intersection = item_tokens.intersection(role_tokens)
+    # Direct matching or exact substring matching with word boundaries (Crucial for weather items)
+    if cleaned_item == cleaned_role:
+        return 1.0
+    if re.search(r'\b' + re.escape(cleaned_item) + r'\b', cleaned_role):
+        return 0.90
+        
+    item_tokens = set(cleaned_item.split())
+    role_tokens = set(cleaned_role.split())
     
-    # Check if one string completely encompasses the other token-wise
-    if item_tokens.issubset(role_tokens) or role_tokens.issubset(item_tokens):
-        return 0.95 + (0.05 if item_tokens == role_tokens else 0.0)
+    intersection = item_tokens.intersection(role_tokens)
+    if not intersection:
+        return 0.0
         
     return len(intersection) / max(len(item_tokens), len(role_tokens))
 
@@ -321,7 +327,6 @@ def execute_unassigned():
 
 # --- 🤖 HIGHLY ACCURATE AUTO-ROLE MATCHING CONTROLLERS ---
 def generate_draft_embed(draft_matches):
-    """Generates a neat status presentation of the current draft state mapping list."""
     matched_lines = []
     for item in ALL_ASSIGNABLE_ITEMS:
         if item in draft_matches:
@@ -354,7 +359,7 @@ def execute_autoroles_discovery(guild: discord.Guild):
             if role.is_default():
                 continue
             score = calculate_match_score(item, role.name)
-            if score > highest_score and score >= 0.45: # Minimum confidence threshold
+            if score > highest_score and score >= 0.40: 
                 highest_score = score
                 best_role = role
                 
@@ -398,11 +403,9 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
             await ctx_or_interaction.send(msg)
         return
         
-    # Update draft payload list element
     draft_data["matches"][item_lower] = role.id
     new_embed = generate_draft_embed(draft_data["matches"])
     
-    # Try cleaning up old configuration layout messages to minimize chat clutter
     if draft_data["last_msg_id"]:
         try:
             channel = ctx_or_interaction.channel
@@ -414,12 +417,10 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
     success_text = f"✏️ **Draft updated!** Set **{item_lower.title()}** to {role.mention}."
     
     if isinstance(ctx_or_interaction, discord.Interaction):
-        # Slash command response
         await ctx_or_interaction.response.send_message(content=success_text)
         new_msg = await ctx_or_interaction.channel.send(embed=new_embed)
         draft_data["last_msg_id"] = new_msg.id
     else:
-        # Prefix command response
         await ctx_or_interaction.send(content=success_text)
         new_msg = await ctx_or_interaction.send(embed=new_embed)
         draft_data["last_msg_id"] = new_msg.id
@@ -459,7 +460,7 @@ async def slash_unassigned(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
     await interaction.response.send_message(embed=execute_unassigned())
 
-@bot.tree.command(name="autoroles", description="Scan and match server roles to tracking items using enhanced accuracy.")
+@bot.tree.command(name="autoroles")
 async def slash_autoroles(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
     embed, has_matches = execute_autoroles_discovery(interaction.guild)
@@ -468,7 +469,7 @@ async def slash_autoroles(interaction: discord.Interaction):
         msg = await interaction.original_response()
         pending_autorole_drafts[interaction.guild_id]["last_msg_id"] = msg.id
 
-@bot.tree.command(name="editdraft", description="Manually edit or add a role pairing inside the pending auto-roles draft queue.")
+@bot.tree.command(name="editdraft")
 @app_commands.describe(item_name="The item name to override", role="The new role to couple with it")
 async def slash_editdraft(interaction: discord.Interaction, item_name: str, role: discord.Role):
     if not interaction.user.guild_permissions.manage_roles: return
