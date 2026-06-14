@@ -57,6 +57,7 @@ async def on_ready():
     check_wiki_stock.start()
 
 # --- THE WIKI API ENGINE ---
+# --- THE WIKI API ENGINE ---
 @tasks.loop(seconds=15)
 async def check_wiki_stock():
     global bot_settings
@@ -97,13 +98,14 @@ async def check_wiki_stock():
                     color=discord.Color.blue()
                 ))
 
-        # 🌱 SEEDS DETECTION
+        # 🌱 SEEDS DETECTION (UPDATED FOR QUANTITY)
         seed_pings, seed_list_str = [], []
         for seed_obj in stock.get("seeds", []):
             seed_name = seed_obj.get("name", "")
+            seed_qty = seed_obj.get("quantity", 1)  # Grabs the amount
             seed_lower = seed_name.lower()
             if seed_lower in VALID_SEEDS:
-                seed_list_str.append(f"• {seed_name}")
+                seed_list_str.append(f"• {seed_name} **(x{seed_qty})**")
                 if seed_lower in saved_roles:
                     seed_pings.append(f"<@&{saved_roles[seed_lower]}>")
                     
@@ -115,13 +117,14 @@ async def check_wiki_stock():
                     color=discord.Color.green()
                 ))
 
-        # 🛠️ GEAR DETECTION
+        # 🛠️ GEAR DETECTION (UPDATED FOR QUANTITY)
         gear_pings, gear_list_str = [], []
         for gear_obj in stock.get("gear", []):
             gear_name = gear_obj.get("name", "")
+            gear_qty = gear_obj.get("quantity", 1)  # Grabs the amount
             gear_lower = gear_name.lower()
             if gear_lower in VALID_GEAR:
-                gear_list_str.append(f"• {gear_name}")
+                gear_list_str.append(f"• {gear_name} **(x{gear_qty})**")
                 if gear_lower in saved_roles:
                     gear_pings.append(f"<@&{saved_roles[gear_lower]}>")
                     
@@ -133,13 +136,14 @@ async def check_wiki_stock():
                     color=discord.Color.orange()
                 ))
 
-        # 📦 CRATES DETECTION
+        # 📦 CRATES DETECTION (UPDATED FOR QUANTITY)
         crate_pings, crate_list_str = [], []
         for crate_obj in stock.get("crates", []):
             crate_name = crate_obj.get("name", "")
+            crate_qty = crate_obj.get("quantity", 1)  # Grabs the amount
             crate_lower = crate_name.lower()
             if crate_lower in VALID_CRATES:
-                crate_list_str.append(f"• {crate_name}")
+                crate_list_str.append(f"• {crate_name} **(x{crate_qty})**")
                 if crate_lower in saved_roles:
                     crate_pings.append(f"<@&{crate_lower]}>")
 
