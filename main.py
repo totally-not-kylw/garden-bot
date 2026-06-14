@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-WIKI_API_URL = "https://growagarden2wiki.net/api/stock"
+WIKI_API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
 LAST_SEEN_SEEDS = []
 LAST_SEEN_WEATHER = None
