@@ -11,10 +11,17 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = os.getenv("DISCORD_TOKEN")
 API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
-VALID_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato", "apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon bloom", "dragon's breath"]
+# Display-only seeds will show in stock messages but CANNOT be assigned roles
+DISPLAY_ONLY_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato", "apple"]
+
+# Assignable items
+VALID_SEEDS = ["bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon bloom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
 VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "blood moon", "midas"]
+
+# Combine for overall stock message printing inclusion
+ALL_TRACKED_SEEDS = VALID_SEEDS + DISPLAY_ONLY_SEEDS
 
 # --- EMOJI MAPPING ---
 ITEM_EMOJIS = {
@@ -46,7 +53,7 @@ ITEM_EMOJIS = {
 
 # Master runtime memory configuration
 bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
-pending_backup = False  # Track changes to avoid hitting Discord's strict channel topic rate limits
+pending_backup = False 
 
 # --- PORT SCANNER FIX (For Cloud Hosting) ---
 class HealthCheckServer(BaseHTTPRequestHandler):
@@ -68,11 +75,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- MEMORY SYNC ENGINE ---
+# --- CENTRALIZED MEMORY ENGINE ---
 async def load_settings_from_discord():
-    """Scans channel descriptions globally to reconstruct mappings after platform updates."""
+    """Scans channel descriptions globally to reconstruct maps perfectly on startup."""
     global bot_settings
-    print("🔄 Syncing configuration maps from text channel topics...")
+    print("🔄 Syncing global configuration maps from channel topics...")
     for guild in bot.guilds:
         for channel in guild.text_channels:
             if channel.topic and "GAG2_DATA:" in channel.topic:
@@ -80,48 +87,53 @@ async def load_settings_from_discord():
                     raw_json = channel.topic.split("GAG2_DATA:")[1].strip()
                     saved_data = json.loads(raw_json)
                     
-                    for k, v in saved_data.get("channels", {}).items():
-                        if v: bot_settings["channels"][k] = v
-                    for k, v in saved_data.get("roles", {}).items():
-                        if v: bot_settings["roles"][k] = v
-                    print(f"✅ Reconstructed configuration map using topic data on #{channel.name}!")
-                except Exception:
-                    pass
+                    if "channels" in saved_data:
+                        for k, v in saved_data["channels"].items():
+                            if v: bot_settings["channels"][k] = v
+                    if "roles" in saved_data:
+                        for k, v in saved_data["roles"].items():
+                            if v: bot_settings["roles"][k.lower().strip()] = v
+                            
+                    print(f"✅ Full recovery successful! Loaded memory data from #{channel.name}")
+                    return
+                except Exception as e:
+                    print(f"⚠️ Error reading backup on #{channel.name}: {e}")
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=1)
 async def dynamic_cloud_backup_loop():
-    """Periodically commits configurations to Discord channel topics safely without blocking commands."""
+    """Safely saves the master dictionary layout into a single primary channel topic."""
     global bot_settings, pending_backup
     if not pending_backup:
         return
 
-    for cat, ch_id in bot_settings["channels"].items():
-        if ch_id:
-            channel = bot.get_channel(ch_id)
-            if channel:
-                clean_topic = ""
-                if channel.topic and "GAG2_DATA:" in channel.topic:
-                    clean_topic = channel.topic.split("GAG2_DATA:")[0].strip()
-                elif channel.topic:
-                    clean_topic = channel.topic.strip()
+    primary_channel_id = bot_settings["channels"].get("seeds") or bot_settings["channels"].get("weather")
+    if not primary_channel_id:
+        return
 
-                backup_package = {
-                    "channels": bot_settings["channels"],
-                    "roles": bot_settings["roles"]
-                }
-                serialized = json.dumps(backup_package)
-                new_topic = f"{clean_topic} | GAG2_DATA:{serialized}".strip(" | ")
-                
-                try:
-                    await channel.edit(topic=new_topic)
-                    print("💾 Background backup committed to channel topic safely.")
-                    pending_backup = False
-                    return  # Success
-                except discord.Forbidden:
-                    pass
-                except discord.HTTPException as e:
-                    if e.status == 429:
-                        print("⚠️ Channel topic sync postponed: Discord rate limit encountered.")
+    channel = bot.get_channel(primary_channel_id)
+    if channel:
+        clean_topic = ""
+        if channel.topic and "GAG2_DATA:" in channel.topic:
+            clean_topic = channel.topic.split("GAG2_DATA:")[0].strip()
+        elif channel.topic:
+            clean_topic = channel.topic.strip()
+
+        backup_package = {
+            "channels": bot_settings["channels"],
+            "roles": bot_settings["roles"]
+        }
+        serialized = json.dumps(backup_package)
+        new_topic = f"{clean_topic} | GAG2_DATA:{serialized}".strip(" | ")
+        
+        try:
+            await channel.edit(topic=new_topic)
+            print("💾 Global database configuration safely secured to cloud channel topic.")
+            pending_backup = False
+        except discord.Forbidden:
+            print("❌ Cannot sync backup: Missing permissions to edit channel topic.")
+        except discord.HTTPException as e:
+            if e.status == 429:
+                print("⚠️ Sync postponed: Hitting Discord rate limits.")
 
 @bot.event
 async def on_ready():
@@ -160,7 +172,7 @@ async def check_wiki_stock():
 
         # ⛅ WEATHER DETECTION
         weather_data = stock.get("weather", {})
-        weather_type = weather_data.get("type", "").lower()
+        weather_type = weather_data.get("type", "").lower().strip()
         
         if weather_type in VALID_WEATHER:
             if bot_settings.get("last_weather") != weather_type:
@@ -182,13 +194,13 @@ async def check_wiki_stock():
         if bot_settings.get("last_stock_items") != current_items_only:
             bot_settings["last_stock_items"] = current_items_only
 
-            # 🌱 SEEDS DETECTION
+            # 🌱 SEEDS DETECTION (Includes ALL_TRACKED_SEEDS for printing display)
             seed_pings, seed_list_str = [], []
             for seed_obj in stock.get("seeds", []):
                 seed_name = seed_obj.get("name", "")
                 seed_qty = seed_obj.get("quantity", 1)
                 seed_lower = seed_name.lower().strip()
-                if seed_lower in VALID_SEEDS:
+                if seed_lower in ALL_TRACKED_SEEDS:
                     emoji = ITEM_EMOJIS.get(seed_lower, "🌱")
                     seed_list_str.append(f"• {seed_name} {emoji} **(x{seed_qty})**")
                     if seed_lower in saved_roles:
@@ -258,8 +270,13 @@ async def execute_setchannel(category: str, channel: discord.TextChannel):
 async def execute_setrole(item_name: str, role: discord.Role):
     global pending_backup
     item_lower = item_name.strip().lower()
+    
+    if item_lower in DISPLAY_ONLY_SEEDS:
+        return f"❌ Role assignment disabled for `{item_name}`. This item is configured for display only."
+        
     if item_lower not in (VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER):
         return f"❌ `{item_name}` is not recognized in tracking lists."
+        
     bot_settings["roles"][item_lower] = role.id
     pending_backup = True
     return f"✅ Pings for **{item_name}** bound to {role.mention}!"
@@ -329,7 +346,7 @@ async def slash_setrole(interaction: discord.Interaction, item_name: str, role: 
     reply_msg = await execute_setrole(item_name, role)
     await interaction.response.send_message(reply_msg)
 
-@bot.tree.command(name="test", description="Broadcast dummy notification layouts to if channels.")
+@bot.tree.command(name="test", description="Broadcast dummy notification layouts to verify channels.")
 async def slash_test(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_channels:
         await interaction.response.send_message("❌ Clearance denied.", ephemeral=True)
