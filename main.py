@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
+# THE ULTIMATE FIX: The actual, correct live API URL you tracked down!
 WIKI_API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
 LAST_SEEN_SEEDS = []
@@ -112,7 +113,7 @@ async def setrole(ctx, *, input_str: str):
     except Exception:
         await ctx.send(f"❌ Error updating role: Verification failed.")
 
-# --- NEW: DEBUG API COMMAND ---
+# --- DEBUG API COMMAND ---
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
@@ -125,7 +126,6 @@ async def checkapi(ctx):
             return
             
         raw_data = response.text
-        # Limit text length just in case the API response is massive
         if len(raw_data) > 1900:
             raw_data = raw_data[:1900] + "\n...[Truncated]"
             
