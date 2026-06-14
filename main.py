@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-# The exact endpoint you discovered in DevTools
+# The exact endpoint you discovered in DevTools!
 API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
 SETTINGS_FILE = "bot_settings.json"
@@ -16,7 +16,7 @@ SETTINGS_FILE = "bot_settings.json"
 VALID_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato", "apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon blossom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
-VALID_WEATHER = ["rain", "blizzard", "lightning", "midas", "rainbow moon", "blood moon"]
+VALID_WEATHER = ["rain", "blizzard", "lightning", "midas", "rainbow moon", "blood moon", "rainbow"]
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -30,7 +30,7 @@ def save_settings(settings):
 
 bot_settings = load_settings()
 
-# --- PORT SCANNER FIX (For Render/Railway) ---
+# --- PORT SCANNER FIX (For Render/Railway cloud hosting) ---
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -52,8 +52,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
-    # Start the background task that checks the API website
+    print(f"✅ Success! GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
+    # This turns on the automated background checking loop
     check_wiki_stock.start()
 
 # --- THE WIKI API ENGINE ---
@@ -73,67 +73,90 @@ async def check_wiki_stock():
             
         api_data = response.json()
         
-        # Prevent spam: Compare the new raw data with the last saved update
+        # Prevent spam: Only send a message if the web data actually changed
         if bot_settings.get("last_stock") == api_data:
             return
             
-        # Convert the incoming data structure to text to parse it with your list filters
-        # Note: Turning json payload into a string allows the script to search it effortlessly
-        content_text = json.dumps(api_data).lower()
-        
         channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
         saved_roles = bot_settings.get("roles", {})
         
+        # Grab the inner stock data dictionary
+        stock = api_data.get("stock", {})
+
         # ⛅ WEATHER DETECTION
-        for weather in VALID_WEATHER:
-            if weather in content_text:
-                w_id = channels.get("weather")
-                if w_id and (w_channel := bot.get_channel(w_id)):
-                    w_ping = f"<@&{saved_roles[weather]}>" if weather in saved_roles else ""
-                    await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{weather.capitalize()}**", color=discord.Color.blue()))
-                    break
+        weather_data = stock.get("weather", {})
+        weather_type = weather_data.get("type", "").lower()
+        
+        if weather_type in VALID_WEATHER:
+            w_id = channels.get("weather")
+            if w_id and (w_channel := bot.get_channel(w_id)):
+                w_ping = f"<@&{saved_roles[weather_type]}>" if weather_type in saved_roles else ""
+                await w_channel.send(content=w_ping, embed=discord.Embed(
+                    title="⛅ Weather Shift Detected!", 
+                    description=f"The environment has changed to: **{weather_type.capitalize()}**", 
+                    color=discord.Color.blue()
+                ))
 
         # 🌱 SEEDS DETECTION
         seed_pings, seed_list_str = [], []
-        for seed in VALID_SEEDS:
-            if seed in content_text:
-                seed_list_str.append(f"• {seed.capitalize()}")
-                if seed in saved_roles:
-                    seed_pings.append(f"<@&{saved_roles[seed]}>")
+        for seed_obj in stock.get("seeds", []):
+            seed_name = seed_obj.get("name", "")
+            seed_lower = seed_name.lower()
+            if seed_lower in VALID_SEEDS:
+                seed_list_str.append(f"• {seed_name}")
+                if seed_lower in saved_roles:
+                    seed_pings.append(f"<@&{saved_roles[seed_lower]}>")
                     
         if seed_list_str and (s_id := channels.get("seeds")):
             if s_channel := bot.get_channel(s_id):
-                await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green()))
+                await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(
+                    title="🌱 Seed Shop Rotation", 
+                    description="\n".join(seed_list_str), 
+                    color=discord.Color.green()
+                ))
 
-        # 🛠️ GEAR & 📦 CRATES DETECTION
-        gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
-        
-        for gear in VALID_GEAR:
-            if gear in content_text:
-                gear_list_str.append(f"• {gear.capitalize()}")
-                if gear in saved_roles:
-                    gear_pings.append(f"<@&{saved_roles[gear]}>")
+        # 🛠️ GEAR DETECTION
+        gear_pings, gear_list_str = [], []
+        for gear_obj in stock.get("gear", []):
+            gear_name = gear_obj.get("name", "")
+            gear_lower = gear_name.lower()
+            if gear_lower in VALID_GEAR:
+                gear_list_str.append(f"• {gear_name}")
+                if gear_lower in saved_roles:
+                    gear_pings.append(f"<@&{saved_roles[gear_lower]}>")
                     
-        for crate in VALID_CRATES:
-            if crate in content_text:
-                crate_list_str.append(f"• {crate.capitalize()}")
-                if crate in saved_roles:
-                    crate_pings.append(f"<@&{saved_roles[crate]}>")
-
         if gear_list_str and (g_id := channels.get("gear")):
             if g_channel := bot.get_channel(g_id):
-                await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange()))
+                await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(
+                    title="🛠️ Gear Shop Rotation", 
+                    description="\n".join(gear_list_str), 
+                    color=discord.Color.orange()
+                ))
+
+        # 📦 CRATES DETECTION
+        crate_pings, crate_list_str = [], []
+        for crate_obj in stock.get("crates", []):
+            crate_name = crate_obj.get("name", "")
+            crate_lower = crate_name.lower()
+            if crate_lower in VALID_CRATES:
+                crate_list_str.append(f"• {crate_name}")
+                if crate_lower in saved_roles:
+                    crate_pings.append(f"<@&{crate_lower]}>")
 
         if crate_list_str and (c_id := channels.get("crates")):
             if c_channel := bot.get_channel(c_id):
-                await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold()))
+                await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(
+                    title="📦 Crate Drops Available", 
+                    description="\n".join(crate_list_str), 
+                    color=discord.Color.gold()
+                ))
 
-        # Save the stock update state so it doesn't alert again until things change
+        # Update cache file state
         bot_settings["last_stock"] = api_data
         save_settings(bot_settings)
 
     except Exception as e:
-        print(f"Error handling wiki api task: {e}")
+        print(f"Error reading live wiki api: {e}")
 
 # --- SETUP COMMANDS ---
 @bot.command()
