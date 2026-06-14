@@ -58,21 +58,25 @@ class HealthCheckServer(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is alive!")
 
     def do_HEAD(self):
-        """Handles uptime monitors checking status without downloading the body."""
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
 
     def do_POST(self):
-        """Handles any monitoring pings utilizing POST requests."""
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
 
     def log_message(self, format, *args):
-        """Overrides and silences standard HTTP logging to keep your console clean."""
         return
+
+def run_health_server():
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
+    server.serve_forever()
+
+threading.Thread(target=run_health_server, daemon=True).start()
 
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
@@ -81,21 +85,18 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- ACCURATE STRING SIMILARITY ENGINE ---
 def clean_string(s: str) -> str:
-    """Removes emojis, punctuation, common filler words, and excess whitespace."""
     s = s.lower()
     s = re.sub(r'[^\w\s\']', '', s) 
     s = re.sub(r'\b(ping|role|alert|feed|tracker|bot|pings|roles|weather|status)\b', '', s) 
     return " ".join(s.split())
 
 def calculate_match_score(item: str, role_name: str) -> float:
-    """Computes an intersection match score with strong word-boundary substring support."""
     cleaned_item = clean_string(item)
     cleaned_role = clean_string(role_name)
     
     if not cleaned_item or not cleaned_role:
         return 0.0
         
-    # Direct matching or exact substring matching with word boundaries (Crucial for weather items)
     if cleaned_item == cleaned_role:
         return 1.0
     if re.search(r'\b' + re.escape(cleaned_item) + r'\b', cleaned_role):
@@ -219,7 +220,7 @@ async def check_wiki_stock():
 
         # ⛅ WEATHER DETECTION
         weather_data = stock.get("weather", {})
-        weather_type = weather_data.get("type", "").lower().strip()
+        weather_type = str(weather_data.get("type", "")).lower().strip()
         
         if weather_type in VALID_WEATHER:
             if bot_settings.get("last_weather") != weather_type:
@@ -231,7 +232,7 @@ async def check_wiki_stock():
                     w_emoji = ITEM_EMOJIS.get(weather_type, "⛅")
                     await w_channel.send(content=w_ping, embed=discord.Embed(
                         title="⛅ Weather Alert!", 
-                        description=f"The environment has changed to: **{weather_type.capitalize()}** {w_emoji}", 
+                        description=f"The environment has changed to: **{weather_type.title()}** {w_emoji}", 
                         color=discord.Color.blue()
                     ))
 
@@ -326,36 +327,91 @@ def execute_unassigned():
     unassigned_weather = [w for w in VALID_WEATHER if w not in saved_roles]
     
     if (len(unassigned_seeds) + len(unassigned_gear) + len(unassigned_crates) + len(unassigned_weather)) == 0:
-        return discord.Embed(title="🎯 All Items Assigned!", description="Every tracking element has an associated ping role configured.", color=discord.Color.green())
+        return [discord.Embed(title="🎯 All Items Assigned!", description="Every tracking element has an associated ping role configured.", color=discord.Color.green())]
 
     embed = discord.Embed(title="⚠️ Unassigned Tracker Elements", description="Remaining items missing role mappings:", color=discord.Color.red())
     if unassigned_seeds: embed.add_field(name="🌱 Seeds", value="\n".join([f"• {s.title()} {ITEM_EMOJIS.get(s, '')}" for s in unassigned_seeds]), inline=False)
     if unassigned_gear: embed.add_field(name="🛠️ Gear", value="\n".join([f"• {g.title()} {ITEM_EMOJIS.get(g, '')}" for g in unassigned_gear]), inline=False)
     if unassigned_crates: embed.add_field(name="📦 Crates", value="\n".join([f"• {c.title()} {ITEM_EMOJIS.get(c, '')}" for c in unassigned_crates]), inline=False)
     if unassigned_weather: embed.add_field(name="⛅ Weather", value="\n".join([f"• {w.title()} {ITEM_EMOJIS.get(w, '')}" for w in unassigned_weather]), inline=False)
-    return embed
+    return [embed]
 
 # --- 🤖 HIGHLY ACCURATE AUTO-ROLE MATCHING CONTROLLERS ---
-def generate_draft_embed(draft_matches):
-    matched_lines = []
-    for item in ALL_ASSIGNABLE_ITEMS:
+def generate_draft_embeds(draft_matches):
+    """Combines categories into two larger embeds to safely prevent PC embed limits and mobile height cutoffs."""
+    embeds_list = []
+    
+    # --- EMBED 1: SEEDS & GEAR ---
+    lines_embed1 = []
+    
+    # Seeds Subsection
+    lines_embed1.append("### 🌱 Seeds")
+    has_seeds = False
+    for item in VALID_SEEDS:
         if item in draft_matches:
             role_id = draft_matches[item]
             emoji = ITEM_EMOJIS.get(item, "🔹")
-            matched_lines.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
-            
-    if not matched_lines:
-        return discord.Embed(
-            title="🔍 Auto-Role Finder Results",
-            description="No roles are currently drafted.",
-            color=discord.Color.orange()
-        )
+            lines_embed1.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
+            has_seeds = True
+    if not has_seeds:
+        lines_embed1.append("*No seeds drafted.*")
         
-    return discord.Embed(
-        title="🤖 Auto-Role Matcher Proposals",
-        description="Review the current proposed pairings below:\n\n" + "\n".join(matched_lines) + "\n\n* To edit an item: `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to lock them in, or `!deny` to cancel.",
-        color=discord.Color.blurple()
+    lines_embed1.append("\n" + "─" * 15 + "\n")
+    
+    # Gear Subsection
+    lines_embed1.append("### 🛠️ Gear")
+    has_gear = False
+    for item in VALID_GEAR:
+        if item in draft_matches:
+            role_id = draft_matches[item]
+            emoji = ITEM_EMOJIS.get(item, "🔹")
+            lines_embed1.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
+            has_gear = True
+    if not has_gear:
+        lines_embed1.append("*No gear drafted.*")
+
+    embed1 = discord.Embed(description="\n".join(lines_embed1), color=discord.Color.green())
+    embed1.set_author(name="🤖 Auto-Role Matcher Proposals", icon_url="https://i.imgur.com/vH3C1tC.png")
+    embeds_list.append(embed1)
+
+    # --- EMBED 2: CRATES & WEATHER ---
+    lines_embed2 = []
+    
+    # Crates Subsection
+    lines_embed2.append("### 📦 Crates")
+    has_crates = False
+    for item in VALID_CRATES:
+        if item in draft_matches:
+            role_id = draft_matches[item]
+            emoji = ITEM_EMOJIS.get(item, "🔹")
+            lines_embed2.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
+            has_crates = True
+    if not has_crates:
+        lines_embed2.append("*No crates drafted.*")
+        
+    lines_embed2.append("\n" + "─" * 15 + "\n")
+    
+    # Weather Subsection
+    lines_embed2.append("### ⛅ Weather")
+    has_weather = False
+    for item in VALID_WEATHER:
+        if item in draft_matches:
+            role_id = draft_matches[item]
+            emoji = ITEM_EMOJIS.get(item, "🔹")
+            lines_embed2.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
+            has_weather = True
+    if not has_weather:
+        lines_embed2.append("*No weather drafted.*")
+
+    embed2 = discord.Embed(description="\n".join(lines_embed2), color=discord.Color.gold())
+    embed2.add_field(
+        name="💡 Instructions", 
+        value="* Need to change something? `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to save, or `!deny` to wipe.", 
+        inline=False
     )
+    embeds_list.append(embed2)
+    
+    return embeds_list
 
 def execute_autoroles_discovery(guild: discord.Guild):
     global pending_autorole_drafts
@@ -377,14 +433,15 @@ def execute_autoroles_discovery(guild: discord.Guild):
             draft_matches[item] = best_role.id
 
     if not draft_matches:
-        return discord.Embed(
+        fallback_embed = discord.Embed(
             title="🔍 Auto-Role Finder Results",
             description="I scanned all roles using enhanced string similarity but couldn't find any robust matches on my lists.",
             color=discord.Color.orange()
-        ), False
+        )
+        return [fallback_embed], False
 
     pending_autorole_drafts[guild.id] = {"matches": draft_matches, "last_msg_id": None}
-    return generate_draft_embed(draft_matches), True
+    return generate_draft_embeds(draft_matches), True
 
 async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: str, role: discord.Role):
     global pending_autorole_drafts
@@ -414,7 +471,7 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
         return
         
     draft_data["matches"][item_lower] = role.id
-    new_embed = generate_draft_embed(draft_data["matches"])
+    new_embeds = generate_draft_embeds(draft_data["matches"])
     
     if draft_data["last_msg_id"]:
         try:
@@ -428,11 +485,11 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
     
     if isinstance(ctx_or_interaction, discord.Interaction):
         await ctx_or_interaction.response.send_message(content=success_text)
-        new_msg = await ctx_or_interaction.channel.send(embed=new_embed)
+        new_msg = await ctx_or_interaction.channel.send(embeds=new_embeds)
         draft_data["last_msg_id"] = new_msg.id
     else:
         await ctx_or_interaction.send(content=success_text)
-        new_msg = await ctx_or_interaction.send(embed=new_embed)
+        new_msg = await ctx_or_interaction.send(embeds=new_embeds)
         draft_data["last_msg_id"] = new_msg.id
 
 def execute_approve_draft(guild_id: int):
@@ -468,13 +525,14 @@ async def slash_setrole(interaction: discord.Interaction, item_name: str, role: 
 @bot.tree.command(name="unassigned")
 async def slash_unassigned(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
-    await interaction.response.send_message(embed=execute_unassigned())
+    embeds = execute_unassigned()
+    await interaction.response.send_message(embeds=embeds)
 
 @bot.tree.command(name="autoroles")
 async def slash_autoroles(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
-    embed, has_matches = execute_autoroles_discovery(interaction.guild)
-    await interaction.response.send_message(embed=embed)
+    embeds, has_matches = execute_autoroles_discovery(interaction.guild)
+    await interaction.response.send_message(embeds=embeds)
     if has_matches:
         msg = await interaction.original_response()
         pending_autorole_drafts[interaction.guild_id]["last_msg_id"] = msg.id
@@ -515,13 +573,14 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def unassigned(ctx):
-    await ctx.send(embed=execute_unassigned())
+    embeds = execute_unassigned()
+    await ctx.send(embeds=embeds)
 
 @bot.command(name="autoroles")
 @commands.has_permissions(manage_roles=True)
 async def cmd_autoroles(ctx):
-    embed, has_matches = execute_autoroles_discovery(ctx.guild)
-    msg = await ctx.send(embed=embed)
+    embeds, has_matches = execute_autoroles_discovery(ctx.guild)
+    msg = await ctx.send(embeds=embeds)
     if has_matches:
         pending_autorole_drafts[ctx.guild.id]["last_msg_id"] = msg.id
 
