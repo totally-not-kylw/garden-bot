@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-# The exact endpoint you discovered in DevTools!
 API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
 SETTINGS_FILE = "bot_settings.json"
@@ -20,9 +19,12 @@ VALID_WEATHER = ["rain", "blizzard", "lightning", "midas", "rainbow moon", "bloo
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r") as f:
-            return json.load(f)
-    return {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock": None}
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None}
 
 def save_settings(settings):
     with open(SETTINGS_FILE, "w") as f:
@@ -53,12 +55,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"✅ Success! GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
-    # This turns on the automated background checking loop
     check_wiki_stock.start()
 
 # --- THE WIKI API ENGINE ---
-# --- THE WIKI API ENGINE ---
-@tasks.loop(seconds=11)
+@tasks.loop(seconds=10)
 async def check_wiki_stock():
     global bot_settings
     await bot.wait_until_ready()
@@ -73,16 +73,15 @@ async def check_wiki_stock():
             return
             
         api_data = response.json()
+        stock = api_data.get("stock", {})
         
-        # Prevent spam: Only send a message if the web data actually changed
-        if bot_settings.get("last_stock") == api_data:
+        # Smart Item Cache: Compare ONLY the actual items, ignoring changing server timestamps!
+        current_items_only = json.dumps(stock, sort_keys=True)
+        if bot_settings.get("last_stock_items") == current_items_only:
             return
             
         channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
         saved_roles = bot_settings.get("roles", {})
-        
-        # Grab the inner stock data dictionary
-        stock = api_data.get("stock", {})
 
         # ⛅ WEATHER DETECTION
         weather_data = stock.get("weather", {})
@@ -98,11 +97,11 @@ async def check_wiki_stock():
                     color=discord.Color.blue()
                 ))
 
-        # 🌱 SEEDS DETECTION (UPDATED FOR QUANTITY)
+        # 🌱 SEEDS DETECTION
         seed_pings, seed_list_str = [], []
         for seed_obj in stock.get("seeds", []):
             seed_name = seed_obj.get("name", "")
-            seed_qty = seed_obj.get("quantity", 1)  # Grabs the amount
+            seed_qty = seed_obj.get("quantity", 1)
             seed_lower = seed_name.lower()
             if seed_lower in VALID_SEEDS:
                 seed_list_str.append(f"• {seed_name} **(x{seed_qty})**")
@@ -117,11 +116,11 @@ async def check_wiki_stock():
                     color=discord.Color.green()
                 ))
 
-        # 🛠️ GEAR DETECTION (UPDATED FOR QUANTITY)
+        # 🛠️ GEAR DETECTION
         gear_pings, gear_list_str = [], []
         for gear_obj in stock.get("gear", []):
             gear_name = gear_obj.get("name", "")
-            gear_qty = gear_obj.get("quantity", 1)  # Grabs the amount
+            gear_qty = gear_obj.get("quantity", 1)
             gear_lower = gear_name.lower()
             if gear_lower in VALID_GEAR:
                 gear_list_str.append(f"• {gear_name} **(x{gear_qty})**")
@@ -136,16 +135,16 @@ async def check_wiki_stock():
                     color=discord.Color.orange()
                 ))
 
-        # 📦 CRATES DETECTION (UPDATED FOR QUANTITY)
+        # 📦 CRATES DETECTION
         crate_pings, crate_list_str = [], []
         for crate_obj in stock.get("crates", []):
             crate_name = crate_obj.get("name", "")
-            crate_qty = crate_obj.get("quantity", 1)  # Grabs the amount
+            crate_qty = crate_obj.get("quantity", 1)
             crate_lower = crate_name.lower()
             if crate_lower in VALID_CRATES:
                 crate_list_str.append(f"• {crate_name} **(x{crate_qty})**")
                 if crate_lower in saved_roles:
-                    crate_pings.append(f"<@&{crate_lower]}>")
+                    crate_pings.append(f"<@&{crate_lower}>")
 
         if crate_list_str and (c_id := channels.get("crates")):
             if c_channel := bot.get_channel(c_id):
@@ -155,8 +154,8 @@ async def check_wiki_stock():
                     color=discord.Color.gold()
                 ))
 
-        # Update cache file state
-        bot_settings["last_stock"] = api_data
+        # Save core items to settings file
+        bot_settings["last_stock_items"] = current_items_only
         save_settings(bot_settings)
 
     except Exception as e:
@@ -203,9 +202,9 @@ async def test(ctx):
     await ctx.send("🔄 Sending test alerts...")
     channels = bot_settings.get("channels", {})
     for cat, name, item, col in [("weather", "⛅ Weather Shift Detected! (TEST)", "Blood Moon", discord.Color.blue()),
-                                 ("seeds", "🌱 Seed Shop Rotation (TEST)", "• Bamboo\n• Apple", discord.Color.green()),
-                                 ("gear", "🛠️ Gear Shop Rotation (TEST)", "• Trowel", discord.Color.orange()),
-                                 ("crates", "📦 Crate Drops Available (TEST)", "• Ladder Crate", discord.Color.gold())]:
+                                 ("seeds", "🌱 Seed Shop Rotation (TEST)", "• Bamboo **(x2)**\n• Apple **(x4)**", discord.Color.green()),
+                                 ("gear", "🛠️ Gear Shop Rotation (TEST)", "• Trowel **(x1)**", discord.Color.orange()),
+                                 ("crates", "📦 Crate Drops Available (TEST)", "• Ladder Crate **(x3)**", discord.Color.gold())]:
         if channels.get(cat):
             ch = bot.get_channel(channels[cat])
             if ch:
