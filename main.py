@@ -8,13 +8,19 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# 🛠️ FILL THESE TWO DETAILS OUT:
-WATCH_CHANNEL_ID = 1515279880487571497      # Put the ID of this tracking channel here
-TRACKER_BOT_USER_ID = 1515287187539890256   # Right-click the tracker bot and click "Copy User ID"
+# 🛠️ MULTI-CHANNEL UPGRADE:
+TRACKER_BOT_USER_ID = 1515287187539890256   # Locked onto your target tracker bot
+
+# Add commas and paste your other channel IDs inside these brackets
+WATCH_CHANNEL_IDS = [
+    1515279880487571497,  # First channel ID you provided
+    1515279938784334035, # Paste second channel ID here (remove the # to activate)
+    1515280700520136775,
+    1515279993381453914, # Paste third channel ID here (remove the # to activate)
+]
 
 SETTINGS_FILE = "bot_settings.json"
 
-# Included everything from your list + common ones seen in your screenshot
 VALID_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato", "apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon blossom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
@@ -56,22 +62,25 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def on_ready():
     print(f"GAG2 Spy Mirror Connected: Logged in as {bot.user.name}")
 
-# --- THE SPY ENGINE (TUNED FOR EMBEDS) ---
+# --- THE SPY ENGINE (TUNED FOR EMBEDS & MULTI-CHANNEL) ---
 @bot.event
 async def on_message(message):
     await bot.process_commands(message)
     
-    # Ignore messages unless they come from the specific channel AND the specific bot
-    if message.channel.id != WATCH_CHANNEL_ID or message.author.id != TRACKER_BOT_USER_ID:
+    # 1. Reject message if it isn't from the official tracker bot
+    if message.author.id != TRACKER_BOT_USER_ID:
+        return
+
+    # 2. Reject message if it lands in an unapproved channel
+    if message.channel.id not in WATCH_CHANNEL_IDS:
         return
 
     channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
     saved_roles = bot_settings.get("roles", {})
     
-    # Start gathering text from the message content and its mentions
     content_text = message.content.lower()
     
-    # Pull data straight out of the dark embed box fields
+    # Extract data directly from embed fields if text structure is hidden inside blocks
     if message.embeds:
         embed = message.embeds[0]
         content_text += f" {embed.title if embed.title else ''} {embed.description if embed.description else ''}"
@@ -92,7 +101,6 @@ async def on_message(message):
     # 🌱 SEEDS DETECTION
     seed_pings, seed_list_str = [], []
     for seed in VALID_SEEDS:
-        # Match whole words to avoid "corn" matching inside longer unassociated words
         if f" {seed} " in f" {content_text} " or f"- {seed}" in content_text:
             seed_list_str.append(f"• {seed.capitalize()}")
             if seed in saved_roles:
