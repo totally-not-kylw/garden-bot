@@ -4,14 +4,14 @@ import requests
 import os
 import threading
 import json
-import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Bypassing Cloudflare by targeting the raw user content delivery network directly
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/haritsnaufalich/gag2-wiki/main/src/data/crops.ts"
+# The live API wrapped inside the AllOrigins proxy to bypass Cloudflare
+REAL_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
+PROXY_URL = f"https://api.allorigins.win/get?url={requests.utils.quote(REAL_URL)}"
 
 LAST_SEEN_SEEDS = []
 LAST_SEEN_WEATHER = None
@@ -60,33 +60,30 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"GAG2 Multi-Tracker Active (GitHub Mirror): Logged in as {bot.user.name}")
+    print(f"GAG2 Live API Tracker Active: Logged in as {bot.user.name}")
     check_wiki_stock.start()
 
-# --- GITHUB FILE PARSER ---
+# --- LIVE API FETCH ---
 def fetch_live_game_data():
-    """Fetches text directly from GitHub code and pulls out items via regular expressions."""
     try:
-        response = requests.get(GITHUB_RAW_URL, headers=HEADERS, timeout=12)
+        response = requests.get(PROXY_URL, headers=HEADERS, timeout=12)
         if response.status_code != 200:
-            return None, f"HTTP Error {response.status_code}"
-            
-        raw_text = response.text
+            return None, f"Proxy Error {response.status_code}"
         
-        # Pull names out from all objects listed inside the crops file array
-        found_crop_names = re.findall(r"name:\s*['\"]([^'\"]+)['\"]", raw_text)
+        # AllOrigins wraps the API response inside a JSON object under the 'contents' key
+        wrapper_json = response.json()
+        raw_contents = wrapper_json.get("contents", "{}")
         
-        if not found_crop_names:
-            return None, "Successfully hit GitHub, but failed to parse crop structural format."
-
-        # Note: Since the static repository contains the general database and lacks live rotating shifts:
-        # We fill 'gear' and 'weather' safely to fit your loop layout without causing crashes.
-        return {
-            "seeds": found_crop_names,
-            "gear": [], 
-            "weather": "Clear"
-        }, None
+        # Parse the actual game stock data
+        stock_data = json.loads(raw_contents)
         
+        if stock_data:
+            return {
+                "seeds": stock_data.get("seeds", []),
+                "gear": stock_data.get("gear", stock_data.get("gears", [])),
+                "weather": stock_data.get("weather", "Clear")
+            }, None
+        return None, "API returned empty content structure."
     except Exception as e:
         return None, str(e)
 
@@ -129,7 +126,7 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
-    await ctx.send("🔍 Fetching raw code structure from GitHub mirror...")
+    await ctx.send("🔍 Testing connection to proxy live stock API...")
     data, error = fetch_live_game_data()
     if data:
         await ctx.send(f"📡 **Extracted live elements successfully!**\n```json\n{json.dumps(data, indent=2)}\n```")
