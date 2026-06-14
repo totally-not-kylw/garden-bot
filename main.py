@@ -25,7 +25,7 @@ ITEM_EMOJIS = {
     "pineapple": "🍍", "mushroom": "🍄", "green bean": "🫛", "banana": "🍌", 
     "coconut": "🥥", "mango": "🥭", "dragon fruit": "🐉", "acorn": "🌰", 
     "cherry": "🍒", "sunflower": "🌻", "venus fly trap": "🪴", "pomegranate": "🍎", 
-    "poison apple": "🍏", "moon blossom": "🌸", "dragon's breath": "🐲",
+    "poison apple": "🍏", "moon bloom": "🌸", "dragon's breath": "🐲",
 
     # Gear
     "common watering can": "💧", "common sprinkler": "💧", "uncommon sprinkler": "⚙️", 
