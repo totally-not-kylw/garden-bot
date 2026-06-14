@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-import requests
+from playwright.sync_api import sync_playwright
 import os
 import threading
 import json
@@ -8,18 +8,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-# The live API wrapped inside the AllOrigins proxy to bypass Cloudflare
-REAL_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
-PROXY_URL = f"https://api.allorigins.win/get?url={requests.utils.quote(REAL_URL)}"
+WIKI_HOME_URL = "https://growagarden2wiki.net/"
 
 LAST_SEEN_SEEDS = []
 LAST_SEEN_WEATHER = None
 SETTINGS_FILE = "bot_settings.json"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
 
 VALID_SEEDS = ["bamboo", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "grape", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon blossom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
@@ -60,32 +53,56 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"GAG2 Live API Tracker Active: Logged in as {bot.user.name}")
+    print(f"GAG2 Real Browser Scraping Active: Logged in as {bot.user.name}")
     check_wiki_stock.start()
 
-# --- LIVE API FETCH ---
+# --- RECURSIVE DEEP SEARCH ---
+def deep_search_stock(data):
+    if isinstance(data, dict):
+        if "seeds" in data or "weather" in data:
+            return data
+        for key, value in data.items():
+            result = deep_search_stock(value)
+            if result:
+                return result
+    elif isinstance(data, list):
+        for item in data:
+            result = deep_search_stock(item)
+            if result:
+                return result
+    return None
+
+# --- REAL BROWSER FETCH ---
 def fetch_live_game_data():
+    """Launches a real headless browser instance to pull down live window variables."""
     try:
-        response = requests.get(PROXY_URL, headers=HEADERS, timeout=12)
-        if response.status_code != 200:
-            return None, f"Proxy Error {response.status_code}"
-        
-        # AllOrigins wraps the API response inside a JSON object under the 'contents' key
-        wrapper_json = response.json()
-        raw_contents = wrapper_json.get("contents", "{}")
-        
-        # Parse the actual game stock data
-        stock_data = json.loads(raw_contents)
-        
-        if stock_data:
-            return {
-                "seeds": stock_data.get("seeds", []),
-                "gear": stock_data.get("gear", stock_data.get("gears", [])),
-                "weather": stock_data.get("weather", "Clear")
-            }, None
-        return None, "API returned empty content structure."
+        with sync_playwright() as p:
+            # Launch chromium with arguments that mimic a standard computer setup
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            
+            # Go to the wiki home page and wait up to 30 seconds for it to fully render
+            page.goto(WIKI_HOME_URL, wait_until="networkidle", timeout=30000)
+            
+            # Extract content directly out of the NextJS data script tag straight from the DOM
+            next_data_str = page.locator("script#__NEXT_DATA__").inner_text()
+            browser.close()
+            
+            if next_data_str:
+                payload = json.loads(next_data_str)
+                stock_data = deep_search_stock(payload)
+                
+                if stock_data:
+                    return {
+                        "seeds": stock_data.get("seeds", []),
+                        "gear": stock_data.get("gear", stock_data.get("gears", [])),
+                        "weather": stock_data.get("weather", "Clear")
+                    }, None
+                else:
+                    return None, f"Structure change detected. Available structural keys: {list(payload.keys())}"
+            return None, "Target DOM element script#__NEXT_DATA__ was missing on load."
     except Exception as e:
-        return None, str(e)
+        return None, f"Browser Engine Error: {str(e)}"
 
 # --- SETUP COMMANDS ---
 @bot.command()
@@ -126,7 +143,7 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
-    await ctx.send("🔍 Testing connection to proxy live stock API...")
+    await ctx.send("🔍 Booting browser instance to crawl live elements...")
     data, error = fetch_live_game_data()
     if data:
         await ctx.send(f"📡 **Extracted live elements successfully!**\n```json\n{json.dumps(data, indent=2)}\n```")
@@ -151,7 +168,7 @@ async def test(ctx):
     await ctx.send("🎯 Test completed!")
 
 # --- BACKGROUND TRACKER ---
-@tasks.loop(seconds=45)
+@tasks.loop(minutes=2)  # Changed to 2 minutes so your hosting platform server doesn't get overloaded launching browsers
 async def check_wiki_stock():
     global LAST_SEEN_SEEDS, LAST_SEEN_WEATHER
     channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
