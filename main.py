@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-import cloudscraper
+import requests
 import os
 import threading
 import json
@@ -8,14 +8,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-WIKI_API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
+# Using an open proxy to slip past Cloudflare's data center block
+REAL_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
+WIKI_API_URL = f"https://api.allorigins.win/get?url={requests.utils.quote(REAL_URL)}"
 
 LAST_SEEN_SEEDS = []
 LAST_SEEN_WEATHER = None
 SETTINGS_FILE = "bot_settings.json"
-
-# Initialize the Cloudflare-bypassing scraper
-scraper = cloudscraper.create_scraper()
 
 VALID_SEEDS = [
     "bamboo", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", 
@@ -119,59 +118,42 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def checkapi(ctx):
-    """Fetches the exact current response using Cloudscraper."""
-    await ctx.send("🔍 Cracking Cloudflare protection to fetch live data...")
+    """Fetches data through an open proxy wrapper."""
+    await ctx.send("🔍 Requesting live data via AllOrigins proxy wrapper...")
     try:
-        # Using cloudscraper instead of standard requests
-        response = scraper.get(WIKI_API_URL, timeout=15)
+        response = requests.get(WIKI_API_URL, timeout=15)
         if response.status_code != 200:
-            await ctx.send(f"❌ API returned an error status code: {response.status_code}")
+            await ctx.send(f"❌ Proxy returned an error status code: {response.status_code}")
             return
             
-        raw_data = response.text
-        if len(raw_data) > 1900:
-            raw_data = raw_data[:1900] + "\n...[Truncated]"
+        wrapper_data = response.json()
+        # The proxy nests the real website response inside a field called "contents"
+        raw_contents = wrapper_data.get("contents", "{}")
+        
+        if len(raw_contents) > 1900:
+            raw_contents = raw_contents[:1900] + "\n...[Truncated]"
             
-        await ctx.send(f"📡 **Raw API Response:**\n```json\n{raw_data}\n```")
+        await ctx.send(f"📡 **Proxy-Delivered API Response:**\n```json\n{raw_contents}\n```")
     except Exception as e:
-        await ctx.send(f"❌ Cloudscraper failed to bypass block: {e}")
+        await ctx.send(f"❌ Proxy wrapper failed to fetch data: {e}")
 
+# --- TEST COMMAND ---
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def test(ctx):
-    """Forces a test alert to all configured channels immediately."""
+    """Forces a test alert."""
     await ctx.send("🔄 Sending test alerts...")
     channels = bot_settings.get("channels", {})
     saved_roles = bot_settings.get("roles", {})
 
-    if channels.get("weather"):
-        ch = bot.get_channel(channels["weather"])
-        if ch:
-            ping = f"<@&{saved_roles['blood moon']}>" if "blood moon" in saved_roles else ""
-            embed = discord.Embed(title="⛅ Weather Shift Detected! (TEST)", description="The environment has changed to: **Blood Moon**", color=discord.Color.blue())
-            await ch.send(content=ping, embed=embed)
-
-    if channels.get("seeds"):
-        ch = bot.get_channel(channels["seeds"])
-        if ch:
-            ping = f"<@&{saved_roles['bamboo']}>" if "bamboo" in saved_roles else ""
-            embed = discord.Embed(title="🌱 Seed Shop Rotation (TEST)", description="• Bamboo\n• Apple\n• Corn", color=discord.Color.green())
-            await ch.send(content=ping, embed=embed)
-
-    if channels.get("gear"):
-        ch = bot.get_channel(channels["gear"])
-        if ch:
-            ping = f"<@&{saved_roles['trowel']}>" if "trowel" in saved_roles else ""
-            embed = discord.Embed(title="🛠️ Gear Shop Rotation (TEST)", description="• Trowel\n• Common Sprinkler", color=discord.Color.orange())
-            await ch.send(content=ping, embed=embed)
-
-    if channels.get("crates"):
-        ch = bot.get_channel(channels["crates"])
-        if ch:
-            ping = f"<@&{saved_roles['ladder crate']}>" if "ladder crate" in saved_roles else ""
-            embed = discord.Embed(title="📦 Crate Drops Available (TEST)", description="• Ladder Crate\n• Sign Crate", color=discord.Color.gold())
-            await ch.send(content=ping, embed=embed)
-
+    for cat, name, item, col in [("weather", "⛅ Weather Shift Detected! (TEST)", "Blood Moon", discord.Color.blue()),
+                                 ("seeds", "🌱 Seed Shop Rotation (TEST)", "• Bamboo\n• Apple", discord.Color.green()),
+                                 ("gear", "🛠️ Gear Shop Rotation (TEST)", "• Trowel", discord.Color.orange()),
+                                 ("crates", "📦 Crate Drops Available (TEST)", "• Ladder Crate", discord.Color.gold())]:
+        if channels.get(cat):
+            ch = bot.get_channel(channels[cat])
+            if ch:
+                await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
     await ctx.send("🎯 Test completed!")
 
 # --- BACKGROUND TRACKER ---
@@ -182,10 +164,14 @@ async def check_wiki_stock():
     saved_roles = bot_settings.get("roles", {})
 
     try:
-        response = scraper.get(WIKI_API_URL, timeout=15)
+        response = requests.get(WIKI_API_URL, timeout=15)
         if response.status_code != 200:
             return
-        data = response.json()
+            
+        wrapper_data = response.json()
+        # Unpack the proxy content string back into actual JSON dictionary data
+        data = json.loads(wrapper_data.get("contents", "{}"))
+        
         current_seeds = data.get("seeds", [])
         current_shop_gear = data.get("gear", data.get("gears", []))
         current_weather = data.get("weather", "Clear")
@@ -193,29 +179,22 @@ async def check_wiki_stock():
         if current_weather != LAST_SEEN_WEATHER:
             LAST_SEEN_WEATHER = current_weather
             w_id = channels.get("weather")
-            if w_id:
-                w_channel = bot.get_channel(w_id)
-                if w_channel:
-                    w_lower = current_weather.lower()
-                    w_ping = f"<@&{saved_roles[w_lower]}>" if (w_lower in VALID_WEATHER and w_lower in saved_roles) else ""
-                    embed_w = discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{current_weather}**", color=discord.Color.blue())
-                    await w_channel.send(content=w_ping, embed=embed_w)
+            if w_id and (w_channel := bot.get_channel(w_id)):
+                w_lower = current_weather.lower()
+                w_ping = f"<@&{saved_roles[w_lower]}>" if (w_lower in VALID_WEATHER and w_lower in saved_roles) else ""
+                await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{current_weather}**", color=discord.Color.blue()))
 
         if current_seeds != LAST_SEEN_SEEDS and current_seeds:
             LAST_SEEN_SEEDS = current_seeds
 
-            s_id = channels.get("seeds")
-            if s_id:
-                s_channel = bot.get_channel(s_id)
-                if s_channel:
+            if s_id := channels.get("seeds"):
+                if s_channel := bot.get_channel(s_id):
                     seed_pings, seed_list_str = [], []
                     for seed in current_seeds:
-                        seed_lower = seed.lower()
                         seed_list_str.append(f"• {seed}")
-                        if seed_lower in VALID_SEEDS and seed_lower in saved_roles:
-                            seed_pings.append(f"<@&{saved_roles[seed_lower]}>")
-                    embed_s = discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green())
-                    await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=embed_s)
+                        if seed.lower() in VALID_SEEDS and seed.lower() in saved_roles:
+                            seed_pings.append(f"<@&{saved_roles[seed.lower()]}>")
+                    await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green()))
 
             gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
             for item in current_shop_gear:
@@ -229,19 +208,13 @@ async def check_wiki_stock():
                     if item_lower in VALID_GEAR and item_lower in saved_roles:
                         gear_pings.append(f"<@&{saved_roles[item_lower]}>")
 
-            g_id = channels.get("gear")
-            if g_id and gear_list_str:
-                g_channel = bot.get_channel(g_id)
-                if g_channel:
-                    embed_g = discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange())
-                    await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=embed_g)
+            if (g_id := channels.get("gear")) and gear_list_str:
+                if g_channel := bot.get_channel(g_id):
+                    await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange()))
 
-            c_id = channels.get("crates")
-            if c_id and crate_list_str:
-                c_channel = bot.get_channel(c_id)
-                if c_channel:
-                    embed_c = discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold())
-                    await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=embed_c)
+            if (c_id := channels.get("crates")) and crate_list_str:
+                if c_channel := bot.get_channel(c_id):
+                    await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold()))
 
     except Exception as e:
         print(f"Error executing stock update: {e}")
