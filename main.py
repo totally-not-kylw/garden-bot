@@ -1,23 +1,15 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import threading
 import json
+import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-# 🛠️ MULTI-CHANNEL UPGRADE:
-TRACKER_BOT_USER_ID = 1515287187539890256   # Locked onto your target tracker bot
-
-# Add commas and paste your other channel IDs inside these brackets
-WATCH_CHANNEL_IDS = [
-    1515279880487571497,  # First channel ID you provided
-    1515279938784334035, # Paste second channel ID here (remove the # to activate)
-    1515280700520136775,
-    1515279993381453914, # Paste third channel ID here (remove the # to activate)
-]
+# The exact endpoint you discovered in DevTools
+API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 
 SETTINGS_FILE = "bot_settings.json"
 
@@ -30,7 +22,7 @@ def load_settings():
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, "r") as f:
             return json.load(f)
-    return {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}}
+    return {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock": None}
 
 def save_settings(settings):
     with open(SETTINGS_FILE, "w") as f:
@@ -38,7 +30,7 @@ def save_settings(settings):
 
 bot_settings = load_settings()
 
-# --- PORT SCANNER FIX ---
+# --- PORT SCANNER FIX (For Render/Railway) ---
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -60,78 +52,88 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"GAG2 Spy Mirror Connected: Logged in as {bot.user.name}")
+    print(f"GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
+    # Start the background task that checks the API website
+    check_wiki_stock.start()
 
-# --- THE SPY ENGINE (TUNED FOR EMBEDS & MULTI-CHANNEL) ---
-@bot.event
-async def on_message(message):
-    await bot.process_commands(message)
+# --- THE WIKI API ENGINE ---
+@tasks.loop(minutes=2)
+async def check_wiki_stock():
+    global bot_settings
+    await bot.wait_until_ready()
     
-    # 1. Reject message if it isn't from the official tracker bot
-    if message.author.id != TRACKER_BOT_USER_ID:
-        return
-
-    # 2. Reject message if it lands in an unapproved channel
-    if message.channel.id not in WATCH_CHANNEL_IDS:
-        return
-
-    channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
-    saved_roles = bot_settings.get("roles", {})
-    
-    content_text = message.content.lower()
-    
-    # Extract data directly from embed fields if text structure is hidden inside blocks
-    if message.embeds:
-        embed = message.embeds[0]
-        content_text += f" {embed.title if embed.title else ''} {embed.description if embed.description else ''}"
-        for field in embed.fields:
-            content_text += f" {field.name} {field.value}"
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept': 'application/json'
+        }
+        response = requests.get(API_URL, headers=headers)
+        if response.status_code != 200:
+            return
             
-    content_text = content_text.lower()
+        api_data = response.json()
+        
+        # Prevent spam: Compare the new raw data with the last saved update
+        if bot_settings.get("last_stock") == api_data:
+            return
+            
+        # Convert the incoming data structure to text to parse it with your list filters
+        # Note: Turning json payload into a string allows the script to search it effortlessly
+        content_text = json.dumps(api_data).lower()
+        
+        channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
+        saved_roles = bot_settings.get("roles", {})
+        
+        # ⛅ WEATHER DETECTION
+        for weather in VALID_WEATHER:
+            if weather in content_text:
+                w_id = channels.get("weather")
+                if w_id and (w_channel := bot.get_channel(w_id)):
+                    w_ping = f"<@&{saved_roles[weather]}>" if weather in saved_roles else ""
+                    await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{weather.capitalize()}**", color=discord.Color.blue()))
+                    break
 
-    # ⛅ WEATHER DETECTION
-    for weather in VALID_WEATHER:
-        if weather in content_text:
-            w_id = channels.get("weather")
-            if w_id and (w_channel := bot.get_channel(w_id)):
-                w_ping = f"<@&{saved_roles[weather]}>" if weather in saved_roles else ""
-                await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{weather.capitalize()}**", color=discord.Color.blue()))
-                break
+        # 🌱 SEEDS DETECTION
+        seed_pings, seed_list_str = [], []
+        for seed in VALID_SEEDS:
+            if seed in content_text:
+                seed_list_str.append(f"• {seed.capitalize()}")
+                if seed in saved_roles:
+                    seed_pings.append(f"<@&{saved_roles[seed]}>")
+                    
+        if seed_list_str and (s_id := channels.get("seeds")):
+            if s_channel := bot.get_channel(s_id):
+                await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green()))
 
-    # 🌱 SEEDS DETECTION
-    seed_pings, seed_list_str = [], []
-    for seed in VALID_SEEDS:
-        if f" {seed} " in f" {content_text} " or f"- {seed}" in content_text:
-            seed_list_str.append(f"• {seed.capitalize()}")
-            if seed in saved_roles:
-                seed_pings.append(f"<@&{saved_roles[seed]}>")
-                
-    if seed_list_str and (s_id := channels.get("seeds")):
-        if s_channel := bot.get_channel(s_id):
-            await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green()))
+        # 🛠️ GEAR & 📦 CRATES DETECTION
+        gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
+        
+        for gear in VALID_GEAR:
+            if gear in content_text:
+                gear_list_str.append(f"• {gear.capitalize()}")
+                if gear in saved_roles:
+                    gear_pings.append(f"<@&{saved_roles[gear]}>")
+                    
+        for crate in VALID_CRATES:
+            if crate in content_text:
+                crate_list_str.append(f"• {crate.capitalize()}")
+                if crate in saved_roles:
+                    crate_pings.append(f"<@&{saved_roles[crate]}>")
 
-    # 🛠️ GEAR & 📦 CRATES DETECTION
-    gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
-    
-    for gear in VALID_GEAR:
-        if gear in content_text:
-            gear_list_str.append(f"• {gear.capitalize()}")
-            if gear in saved_roles:
-                gear_pings.append(f"<@&{saved_roles[gear]}>")
-                
-    for crate in VALID_CRATES:
-        if crate in content_text:
-            crate_list_str.append(f"• {crate.capitalize()}")
-            if crate in saved_roles:
-                crate_pings.append(f"<@&{saved_roles[crate]}>")
+        if gear_list_str and (g_id := channels.get("gear")):
+            if g_channel := bot.get_channel(g_id):
+                await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange()))
 
-    if gear_list_str and (g_id := channels.get("gear")):
-        if g_channel := bot.get_channel(g_id):
-            await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange()))
+        if crate_list_str and (c_id := channels.get("crates")):
+            if c_channel := bot.get_channel(c_id):
+                await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold()))
 
-    if crate_list_str and (c_id := channels.get("crates")):
-        if c_channel := bot.get_channel(c_id):
-            await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold()))
+        # Save the stock update state so it doesn't alert again until things change
+        bot_settings["last_stock"] = api_data
+        save_settings(bot_settings)
+
+    except Exception as e:
+        print(f"Error handling wiki api task: {e}")
 
 # --- SETUP COMMANDS ---
 @bot.command()
