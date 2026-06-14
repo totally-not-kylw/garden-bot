@@ -14,7 +14,7 @@ API_URL = "https://api.growagarden2wiki.net/api/v1/games/grow-a-garden-2/stock"
 VALID_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato", "apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon bloom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
-VALID_WEATHER = ["rain", "blizzard", "lightning", "midas", "rainbow moon", "blood moon", "rainbow"]
+VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "blood moon", "midas"]
 
 # --- EMOJI MAPPING ---
 ITEM_EMOJIS = {
@@ -40,8 +40,8 @@ ITEM_EMOJIS = {
     "bear trap crate": "🪤", "fence crate": "🚧", "teleporter pad crate": "🌀",
     
     # Weather
-    "rain": "🌧️", "blizzard": "🌨️", "lightning": "🌩️", "midas": "🪙", 
-    "rainbow moon": "🌙", "blood moon": "🔴", "rainbow": "🌈"
+    "rain": "🌧️", "lightning": "🌩️", "snowfall": "❄️", "rainbow": "🌈", 
+    "starfall": "⭐", "blood moon": "🔴", "midas": "🪙"
 }
 
 # Master runtime memory configuration
@@ -187,7 +187,7 @@ async def check_wiki_stock():
             for seed_obj in stock.get("seeds", []):
                 seed_name = seed_obj.get("name", "")
                 seed_qty = seed_obj.get("quantity", 1)
-                seed_lower = seed_name.lower()
+                seed_lower = seed_name.lower().strip()
                 if seed_lower in VALID_SEEDS:
                     emoji = ITEM_EMOJIS.get(seed_lower, "🌱")
                     seed_list_str.append(f"• {seed_name} {emoji} **(x{seed_qty})**")
@@ -207,7 +207,7 @@ async def check_wiki_stock():
             for gear_obj in stock.get("gear", []):
                 gear_name = gear_obj.get("name", "")
                 gear_qty = gear_obj.get("quantity", 1)
-                gear_lower = gear_name.lower()
+                gear_lower = gear_name.lower().strip()
                 if gear_lower in VALID_GEAR:
                     emoji = ITEM_EMOJIS.get(gear_lower, "🛠️")
                     gear_list_str.append(f"• {gear_name} {emoji} **(x{gear_qty})**")
@@ -227,7 +227,7 @@ async def check_wiki_stock():
             for crate_obj in stock.get("crates", []):
                 crate_name = crate_obj.get("name", "")
                 crate_qty = crate_obj.get("quantity", 1)
-                crate_lower = crate_name.lower()
+                crate_lower = crate_name.lower().strip()
                 if crate_lower in VALID_CRATES:
                     emoji = ITEM_EMOJIS.get(crate_lower, "📦")
                     crate_list_str.append(f"• {crate_name} {emoji} **(x{crate_qty})**")
@@ -251,7 +251,7 @@ async def execute_setchannel(category: str, channel: discord.TextChannel):
     category = category.lower().strip()
     if category in ["weather", "seeds", "gear", "crates"]:
         bot_settings["channels"][category] = channel.id
-        pending_backup = True  # Queues the save to happen in the background
+        pending_backup = True
         return f"✅ **{category.capitalize()}** alerts mapped to {channel.mention}! Data will sync momentarily."
     return "❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`."
 
@@ -261,7 +261,7 @@ async def execute_setrole(item_name: str, role: discord.Role):
     if item_lower not in (VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER):
         return f"❌ `{item_name}` is not recognized in tracking lists."
     bot_settings["roles"][item_lower] = role.id
-    pending_backup = True  # Queues the save to happen in the background
+    pending_backup = True
     return f"✅ Pings for **{item_name}** bound to {role.mention}!"
 
 async def execute_test(guild):
@@ -329,7 +329,7 @@ async def slash_setrole(interaction: discord.Interaction, item_name: str, role: 
     reply_msg = await execute_setrole(item_name, role)
     await interaction.response.send_message(reply_msg)
 
-@bot.tree.command(name="test", description="Broadcast dummy notification layouts to verify channels.")
+@bot.tree.command(name="test", description="Broadcast dummy notification layouts to if channels.")
 async def slash_test(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_channels:
         await interaction.response.send_message("❌ Clearance denied.", ephemeral=True)
