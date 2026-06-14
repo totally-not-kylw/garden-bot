@@ -57,12 +57,22 @@ class HealthCheckServer(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
 
-def run_health_server():
-    port = int(os.getenv("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
-    server.serve_forever()
+    def do_HEAD(self):
+        """Handles uptime monitors checking status without downloading the body."""
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
 
-threading.Thread(target=run_health_server, daemon=True).start()
+    def do_POST(self):
+        """Handles any monitoring pings utilizing POST requests."""
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+    def log_message(self, format, *args):
+        """Overrides and silences standard HTTP logging to keep your console clean."""
+        return
 
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
