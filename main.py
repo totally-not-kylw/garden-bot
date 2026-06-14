@@ -1,6 +1,5 @@
 import discord
-from discord.ext import commands, tasks
-from playwright.sync_api import sync_playwright
+from discord.ext import commands
 import os
 import threading
 import json
@@ -8,10 +7,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-WIKI_HOME_URL = "https://growagarden2wiki.net/"
 
-LAST_SEEN_SEEDS = []
-LAST_SEEN_WEATHER = None
+# Put the ID of the public channel your bot is "watching" for stock updates here!
+WATCH_CHANNEL_ID = 123456789012345678  
+
 SETTINGS_FILE = "bot_settings.json"
 
 VALID_SEEDS = ["bamboo", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "grape", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "moon blossom", "dragon's breath"]
@@ -53,56 +52,76 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"GAG2 Real Browser Scraping Active: Logged in as {bot.user.name}")
-    check_wiki_stock.start()
+    print(f"GAG2 Discord Mirror Active: Logged in as {bot.user.name}")
 
-# --- RECURSIVE DEEP SEARCH ---
-def deep_search_stock(data):
-    if isinstance(data, dict):
-        if "seeds" in data or "weather" in data:
-            return data
-        for key, value in data.items():
-            result = deep_search_stock(value)
-            if result:
-                return result
-    elif isinstance(data, list):
-        for item in data:
-            result = deep_search_stock(item)
-            if result:
-                return result
-    return None
+# --- THE SPY ENGINE ---
+@bot.event
+async def on_message(message):
+    # Process regular bot commands first
+    await bot.process_commands(message)
+    
+    # Check if the message is coming from the channel we are watching
+    if message.channel.id != WATCH_CHANNEL_ID:
+        return
 
-# --- REAL BROWSER FETCH ---
-def fetch_live_game_data():
-    """Launches a real headless browser instance to pull down live window variables."""
-    try:
-        with sync_playwright() as p:
-            # Launch chromium with arguments that mimic a standard computer setup
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
+    saved_roles = bot_settings.get("roles", {})
+    
+    # Read the text or embed details from the source bot
+    content_text = message.content.lower()
+    
+    # If the source bot uses embeds, pull text from the embed instead
+    if message.embeds:
+        embed = message.embeds[0]
+        content_text += f" {embed.title if embed.title else ''} {embed.description if embed.description else ''}"
+        for field in embed.fields:
+            content_text += f" {field.name} {field.value}"
             
-            # Go to the wiki home page and wait up to 30 seconds for it to fully render
-            page.goto(WIKI_HOME_URL, wait_until="networkidle", timeout=30000)
-            
-            # Extract content directly out of the NextJS data script tag straight from the DOM
-            next_data_str = page.locator("script#__NEXT_DATA__").inner_text()
-            browser.close()
-            
-            if next_data_str:
-                payload = json.loads(next_data_str)
-                stock_data = deep_search_stock(payload)
+    content_text = content_text.lower()
+
+    # ⛅ WEATHER DETECTION
+    for weather in VALID_WEATHER:
+        if weather in content_text:
+            w_id = channels.get("weather")
+            if w_id and (w_channel := bot.get_channel(w_id)):
+                w_ping = f"<@&{saved_roles[weather]}>" if weather in saved_roles else ""
+                await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{weather.capitalize()}**", color=discord.Color.blue()))
+                break # Only process one weather event per message
+
+    # 🌱 SEEDS DETECTION
+    seed_pings, seed_list_str = [], []
+    for seed in VALID_SEEDS:
+        if seed in content_text:
+            seed_list_str.append(f"• {seed.capitalize()}")
+            if seed in saved_roles:
+                seed_pings.append(f"<@&{saved_roles[seed]}>")
                 
-                if stock_data:
-                    return {
-                        "seeds": stock_data.get("seeds", []),
-                        "gear": stock_data.get("gear", stock_data.get("gears", [])),
-                        "weather": stock_data.get("weather", "Clear")
-                    }, None
-                else:
-                    return None, f"Structure change detected. Available structural keys: {list(payload.keys())}"
-            return None, "Target DOM element script#__NEXT_DATA__ was missing on load."
-    except Exception as e:
-        return None, f"Browser Engine Error: {str(e)}"
+    if seed_list_str and (s_id := channels.get("seeds")):
+        if s_channel := bot.get_channel(s_id):
+            await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green()))
+
+    # 🛠️ GEAR & 📦 CRATES DETECTION
+    gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
+    
+    for gear in VALID_GEAR:
+        if gear in content_text:
+            gear_list_str.append(f"• {gear.capitalize()}")
+            if gear in saved_roles:
+                gear_pings.append(f"<@&{saved_roles[gear]}>")
+                
+    for crate in VALID_CRATES:
+        if crate in content_text:
+            crate_list_str.append(f"• {crate.capitalize()}")
+            if crate in saved_roles:
+                crate_pings.append(f"<@&{saved_roles[crate]}>")
+
+    if gear_list_str and (g_id := channels.get("gear")):
+        if g_channel := bot.get_channel(g_id):
+            await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange()))
+
+    if crate_list_str and (c_id := channels.get("crates")):
+        if c_channel := bot.get_channel(c_id):
+            await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold()))
 
 # --- SETUP COMMANDS ---
 @bot.command()
@@ -139,24 +158,11 @@ async def setrole(ctx, *, input_str: str):
     except Exception:
         await ctx.send(f"❌ Error updating role: Verification failed.")
 
-# --- DEBUG API COMMAND ---
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def checkapi(ctx):
-    await ctx.send("🔍 Booting browser instance to crawl live elements...")
-    data, error = fetch_live_game_data()
-    if data:
-        await ctx.send(f"📡 **Extracted live elements successfully!**\n```json\n{json.dumps(data, indent=2)}\n```")
-    else:
-        await ctx.send(f"❌ **Search Report:**\n{error}")
-
-# --- TEST COMMAND ---
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def test(ctx):
     await ctx.send("🔄 Sending test alerts...")
     channels = bot_settings.get("channels", {})
-
     for cat, name, item, col in [("weather", "⛅ Weather Shift Detected! (TEST)", "Blood Moon", discord.Color.blue()),
                                  ("seeds", "🌱 Seed Shop Rotation (TEST)", "• Bamboo\n• Apple", discord.Color.green()),
                                  ("gear", "🛠️ Gear Shop Rotation (TEST)", "• Trowel", discord.Color.orange()),
@@ -166,65 +172,5 @@ async def test(ctx):
             if ch:
                 await ch.send(embed=discord.Embed(title=name, description=f"The environment has changed to: **{item}**" if cat == "weather" else item, color=col))
     await ctx.send("🎯 Test completed!")
-
-# --- BACKGROUND TRACKER ---
-@tasks.loop(minutes=2)  # Changed to 2 minutes so your hosting platform server doesn't get overloaded launching browsers
-async def check_wiki_stock():
-    global LAST_SEEN_SEEDS, LAST_SEEN_WEATHER
-    channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
-    saved_roles = bot_settings.get("roles", {})
-
-    data, error = fetch_live_game_data()
-    if not data:
-        return
-
-    current_seeds = data.get("seeds", [])
-    current_shop_gear = data.get("gear", [])
-    current_weather = data.get("weather", "Clear")
-
-    if current_weather != LAST_SEEN_WEATHER:
-        LAST_SEEN_WEATHER = current_weather
-        w_id = channels.get("weather")
-        if w_id and (w_channel := bot.get_channel(w_id)):
-            w_lower = current_weather.lower()
-            w_ping = f"<@&{saved_roles[w_lower]}>" if (w_lower in VALID_WEATHER and w_lower in saved_roles) else ""
-            await w_channel.send(content=w_ping, embed=discord.Embed(title="⛅ Weather Shift Detected!", description=f"The environment has changed to: **{current_weather}**", color=discord.Color.blue()))
-
-    if current_seeds != LAST_SEEN_SEEDS and current_seeds:
-        LAST_SEEN_SEEDS = current_seeds
-
-        if s_id := channels.get("seeds"):
-            if s_channel := bot.get_channel(s_id):
-                seed_pings, seed_list_str = [], []
-                for seed in current_seeds:
-                    seed_list_str.append(f"• {seed}")
-                    if seed.lower() in VALID_SEEDS and seed.lower() in saved_roles:
-                        seed_pings.append(f"<@&{saved_roles[seed.lower()]}>")
-                await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(title="🌱 Seed Shop Rotation", description="\n".join(seed_list_str), color=discord.Color.green()))
-
-    if current_shop_gear:
-        gear_pings, crate_pings, gear_list_str, crate_list_str = [], [], [], []
-        for item in current_shop_gear:
-            item_lower = item.lower()
-            if item_lower in VALID_CRATES:
-                crate_list_str.append(f"• {item}")
-                if item_lower in saved_roles:
-                    crate_pings.append(f"<@&{saved_roles[item_lower]}>")
-            else:
-                gear_list_str.append(f"• {item}")
-                if item_lower in VALID_GEAR and item_lower in saved_roles:
-                    gear_pings.append(f"<@&{saved_roles[item_lower]}>")
-
-        if (g_id := channels.get("gear")) and gear_list_str:
-            if g_channel := bot.get_channel(g_id):
-                await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(title="🛠️ Gear Shop Rotation", description="\n".join(gear_list_str), color=discord.Color.orange()))
-
-        if (c_id := channels.get("crates")) and crate_list_str:
-            if c_channel := bot.get_channel(c_id):
-                await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(title="📦 Crate Drops Available", description="\n".join(crate_list_str), color=discord.Color.gold()))
-
-@check_wiki_stock.before_loop
-async def before_check():
-    await bot.wait_until_ready()
 
 bot.run(TOKEN)
