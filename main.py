@@ -7,6 +7,7 @@ import json
 import requests
 import asyncio
 import re
+import time  # Imported for live timestamp generation
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
@@ -239,6 +240,10 @@ async def check_wiki_stock():
         current_items_only = json.dumps({k: stock.get(k) for k in ["seeds", "gear", "crates"]}, sort_keys=True)
         if bot_settings.get("last_stock_items") != current_items_only:
             bot_settings["last_stock_items"] = current_items_only
+            
+            # Generate the Unix Timestamp for right now
+            current_timestamp = int(time.time())
+            timestamp_string = f"Stock At: <t:{current_timestamp}:t> (<t:{current_timestamp}:R>)\n\n"
 
             # 🌱 SEEDS DETECTION
             seed_pings, seed_list_str = [], []
@@ -255,7 +260,9 @@ async def check_wiki_stock():
             if seed_list_str and (s_id := channels.get("seeds")):
                 if s_channel := bot.get_channel(s_id):
                     await s_channel.send(content=" ".join(set(seed_pings)) if seed_pings else "", embed=discord.Embed(
-                        title="🌱 Seed Stock!", description="\n".join(seed_list_str), color=discord.Color.green()
+                        title="🌱 Seed Stock!", 
+                        description=timestamp_string + "\n".join(seed_list_str), 
+                        color=discord.Color.green()
                     ))
 
             # 🛠️ GEAR DETECTION
@@ -273,7 +280,9 @@ async def check_wiki_stock():
             if gear_list_str and (g_id := channels.get("gear")):
                 if g_channel := bot.get_channel(g_id):
                     await g_channel.send(content=" ".join(set(gear_pings)) if gear_pings else "", embed=discord.Embed(
-                        title="🛠️ Gear Stock!", description="\n".join(gear_list_str), color=discord.Color.orange()
+                        title="🛠️ Gear Stock!", 
+                        description=timestamp_string + "\n".join(gear_list_str), 
+                        color=discord.Color.orange()
                     ))
 
             # 📦 CRATES DETECTION
@@ -291,7 +300,9 @@ async def check_wiki_stock():
             if crate_list_str and (c_id := channels.get("crates")):
                 if c_channel := bot.get_channel(c_id):
                     await c_channel.send(content=" ".join(set(crate_pings)) if crate_pings else "", embed=discord.Embed(
-                        title="📦 Crate Shop!", description="\n".join(crate_list_str), color=discord.Color.gold()
+                        title="📦 Crate Shop!", 
+                        description=timestamp_string + "\n".join(crate_list_str), 
+                        color=discord.Color.gold()
                     ))
     except Exception as e:
         print(f"Error reading live wiki api: {e}")
