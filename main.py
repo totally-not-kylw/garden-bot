@@ -242,8 +242,8 @@ async def check_wiki_stock():
             bot_settings["last_stock_items"] = current_items_only
             
             # Generate the Unix Timestamp for right now
-            current_timestamp = int(time.time())
-            timestamp_string = f"Stock At: <t:{current_timestamp}:t> (<t:{current_timestamp}:R>)\n\n"
+            nearest_5_min_timestamp = int(time.time() // 300) * 300
+            timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
 
             # 🌱 SEEDS DETECTION
             seed_pings, seed_list_str = [], []
