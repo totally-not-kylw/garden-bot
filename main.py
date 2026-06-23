@@ -213,9 +213,9 @@ async def dynamic_cloud_backup_loop():
 async def on_ready():
     print(f"✅ GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
     
-    # Run database loading without putting a long pause inside on_ready
+    # Run database loading as a background task to prevent blocking the boot sequence
     if not ready_to_track:
-        await load_settings_from_discord()
+        asyncio.create_task(load_settings_from_discord())
     
     try:
         synced = await bot.tree.sync()
