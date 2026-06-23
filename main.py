@@ -200,15 +200,78 @@ async def on_ready():
     check_wiki_stock.start()
     dynamic_cloud_backup_loop.start()
 
+# --- FETCH & BUILD STOCK EMBEDS ---
+def generate_current_stock_embeds():
+    """Hits the API instantly and returns a tuple of (weather_embed, seeds_embed, gear_embed, crates_embed)"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0', 
+            'Accept': 'application/json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate'
+        }
+        response = requests.get(API_URL, headers=headers, timeout=4)
+        if response.status_code != 200:
+            return None, "Error: Unable to fetch API data."
+            
+        stock = response.json().get("stock", {})
+        nearest_5_min_timestamp = int(time.time() // 300) * 300
+        timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
+        
+        embeds = []
+
+        # Weather
+        w_data = stock.get("weather", {})
+        w_type = str(w_data.get("type", "")).lower().strip()
+        if w_type in VALID_WEATHER:
+            w_emoji = ITEM_EMOJIS.get(w_type, "⛅")
+            w_embed = discord.Embed(title="⛅ Current Weather Status", description=f"The current global environment is: **{w_type.title()}** {w_emoji}", color=discord.Color.blue())
+            embeds.append(w_embed)
+
+        # Seeds
+        seed_list = []
+        for s_obj in stock.get("seeds", []):
+            s_name = s_obj.get("name", "")
+            s_qty = s_obj.get("quantity", 1)
+            s_lower = s_name.lower().strip()
+            if s_lower in ALL_TRACKED_SEEDS:
+                seed_list.append(f"• {s_name} {ITEM_EMOJIS.get(s_lower, '🌱')} **(x{s_qty})**")
+        if seed_list:
+            embeds.append(discord.Embed(title="🌱 Current Seed Stock", description=timestamp_string + "\n".join(seed_list), color=discord.Color.green()))
+
+        # Gear
+        gear_list = []
+        for g_obj in stock.get("gear", []):
+            g_name = g_obj.get("name", "")
+            g_qty = g_obj.get("quantity", 1)
+            g_lower = g_name.lower().strip()
+            if g_lower in VALID_GEAR:
+                gear_list.append(f"• {g_name} {ITEM_EMOJIS.get(g_lower, '🛠️')} **(x{g_qty})**")
+        if gear_list:
+            embeds.append(discord.Embed(title="🛠️ Current Gear Stock", description=timestamp_string + "\n".join(gear_list), color=discord.Color.orange()))
+
+        # Crates
+        crate_list = []
+        for c_obj in stock.get("crates", []):
+            c_name = c_obj.get("name", "")
+            c_qty = c_obj.get("quantity", 1)
+            c_lower = c_name.lower().strip()
+            if c_lower in VALID_CRATES:
+                crate_list.append(f"• {c_name} {ITEM_EMOJIS.get(c_lower, '📦')} **(x{c_qty})**")
+        if crate_list:
+            embeds.append(discord.Embed(title="📦 Current Crate Shop", description=timestamp_string + "\n".join(crate_list), color=discord.Color.gold()))
+
+        return embeds, None
+    except Exception as e:
+        return None, f"Internal Error: {e}"
+
 # --- THE WIKI API ENGINE ---
-@tasks.loop(seconds=5)  # Increased speed to 5 seconds to catch API updates immediately
+@tasks.loop(seconds=5)
 async def check_wiki_stock():
     global bot_settings, ready_to_track
     if not ready_to_track:
         return
         
     try:
-        # Added Cache-Control headers to stop proxy servers or local network layers from caching stale JSON files
         headers = {
             'User-Agent': 'Mozilla/5.0', 
             'Accept': 'application/json',
@@ -244,13 +307,22 @@ async def check_wiki_stock():
                         color=discord.Color.blue()
                     ))
 
-        # We construct a fingerprint based on unique items and quantities to detect restocks instantly
-        current_items_only = json.dumps({k: stock.get(k) for k in ["seeds", "gear", "crates"]}, sort_keys=True)
+        # --- FIX FALSE ALERTER STABILITY ---
+        clean_stock_fingerprint = {}
+        for category in ["seeds", "gear", "crates"]:
+            category_items = stock.get(category, [])
+            cleaned_items = [
+                {"name": str(item.get("name", "")).strip().lower(), "quantity": item.get("quantity", 1)}
+                for item in category_items if item.get("name")
+            ]
+            cleaned_items.sort(key=lambda x: x["name"])
+            clean_stock_fingerprint[category] = cleaned_items
+
+        current_items_only = json.dumps(clean_stock_fingerprint, sort_keys=True)
+        
         if bot_settings.get("last_stock_items") != current_items_only:
             bot_settings["last_stock_items"] = current_items_only
             
-            # --- KEEP THE 5-MINUTE RESTOCK CLOCK GRAPHICS ---
-            # Even if the message drops late or early, this calculations forces the visual UI back onto the target 5 minute window
             nearest_5_min_timestamp = int(time.time() // 300) * 300
             timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
 
@@ -356,15 +428,10 @@ def execute_unassigned():
     if unassigned_weather: embed.add_field(name="⛅ Weather", value="\n".join([f"• {w.title()} {ITEM_EMOJIS.get(w, '')}" for w in unassigned_weather]), inline=False)
     return [embed]
 
-# --- 🤖 HIGHLY ACCURATE AUTO-ROLE MATCHING CONTROLLERS ---
+# --- AUTO-ROLE CONTROLLERS ---
 def generate_draft_embeds(draft_matches):
-    """Combines categories into two larger embeds to safely prevent PC embed limits and mobile height cutoffs."""
     embeds_list = []
-    
-    # --- EMBED 1: SEEDS & GEAR ---
     lines_embed1 = []
-    
-    # Seeds Subsection
     lines_embed1.append("### 🌱 Seeds")
     has_seeds = False
     for item in VALID_SEEDS:
@@ -373,12 +440,8 @@ def generate_draft_embeds(draft_matches):
             emoji = ITEM_EMOJIS.get(item, "🔹")
             lines_embed1.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_seeds = True
-    if not has_seeds:
-        lines_embed1.append("*No seeds drafted.*")
-        
+    if not has_seeds: lines_embed1.append("*No seeds drafted.*")
     lines_embed1.append("\n" + "─" * 15 + "\n")
-    
-    # Gear Subsection
     lines_embed1.append("### 🛠️ Gear")
     has_gear = False
     for item in VALID_GEAR:
@@ -387,17 +450,12 @@ def generate_draft_embeds(draft_matches):
             emoji = ITEM_EMOJIS.get(item, "🔹")
             lines_embed1.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_gear = True
-    if not has_gear:
-        lines_embed1.append("*No gear drafted.*")
-
+    if not has_gear: lines_embed1.append("*No gear drafted.*")
     embed1 = discord.Embed(description="\n".join(lines_embed1), color=discord.Color.green())
     embed1.set_author(name="🤖 Auto-Role Matcher Proposals", icon_url="https://i.imgur.com/vH3C1tC.png")
     embeds_list.append(embed1)
 
-    # --- EMBED 2: CRATES & WEATHER ---
     lines_embed2 = []
-    
-    # Crates Subsection
     lines_embed2.append("### 📦 Crates")
     has_crates = False
     for item in VALID_CRATES:
@@ -406,12 +464,8 @@ def generate_draft_embeds(draft_matches):
             emoji = ITEM_EMOJIS.get(item, "🔹")
             lines_embed2.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_crates = True
-    if not has_crates:
-        lines_embed2.append("*No crates drafted.*")
-        
+    if not has_crates: lines_embed2.append("*No crates drafted.*")
     lines_embed2.append("\n" + "─" * 15 + "\n")
-    
-    # Weather Subsection
     lines_embed2.append("### ⛅ Weather")
     has_weather = False
     for item in VALID_WEATHER:
@@ -420,45 +474,28 @@ def generate_draft_embeds(draft_matches):
             emoji = ITEM_EMOJIS.get(item, "🔹")
             lines_embed2.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_weather = True
-    if not has_weather:
-        lines_embed2.append("*No weather drafted.*")
-
+    if not has_weather: lines_embed2.append("*No weather drafted.*")
     embed2 = discord.Embed(description="\n".join(lines_embed2), color=discord.Color.gold())
-    embed2.add_field(
-        name="💡 Instructions", 
-        value="* Need to change something? `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to save, or `!deny` to wipe.", 
-        inline=False
-    )
+    embed2.add_field(name="💡 Instructions", value="* Need to change something? `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to save, or `!deny` to wipe.", inline=False)
     embeds_list.append(embed2)
-    
     return embeds_list
 
 def execute_autoroles_discovery(guild: discord.Guild):
     global pending_autorole_drafts
     draft_matches = {}
-    
     for item in ALL_ASSIGNABLE_ITEMS:
         best_role = None
         highest_score = 0.0
-        
         for role in guild.roles:
-            if role.is_default():
-                continue
+            if role.is_default(): continue
             score = calculate_match_score(item, role.name)
             if score > highest_score and score >= 0.40: 
                 highest_score = score
                 best_role = role
-                
-        if best_role:
-            draft_matches[item] = best_role.id
+        if best_role: draft_matches[item] = best_role.id
 
     if not draft_matches:
-        fallback_embed = discord.Embed(
-            title="🔍 Auto-Role Finder Results",
-            description="I scanned all roles using enhanced string similarity but couldn't find any robust matches on my lists.",
-            color=discord.Color.orange()
-        )
-        return [fallback_embed], False
+        return [discord.Embed(title="🔍 Auto-Role Finder Results", description="No matches found.", color=discord.Color.orange())], False
 
     pending_autorole_drafts[guild.id] = {"matches": draft_matches, "last_msg_id": None}
     return generate_draft_embeds(draft_matches), True
@@ -467,71 +504,59 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
     global pending_autorole_drafts
     draft_data = pending_autorole_drafts.get(guild_id)
     if not draft_data:
-        msg = "❌ There is no active auto-role draft to edit right now. Run `!autoroles` first!"
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            await ctx_or_interaction.response.send_message(msg)
-        else:
-            await ctx_or_interaction.send(msg)
+        msg = "❌ No active draft. Run `!autoroles` first!"
+        await (ctx_or_interaction.response.send_message(msg) if isinstance(ctx_or_interaction, discord.Interaction) else ctx_or_interaction.send(msg))
         return
-        
     item_lower = item_name.strip().lower()
-    if item_lower in DISPLAY_ONLY_SEEDS:
-        msg = f"❌ Role assignment disabled for `{item_name}`. This item is display-only."
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            await ctx_or_interaction.response.send_message(msg)
-        else:
-            await ctx_or_interaction.send(msg)
+    if item_lower in DISPLAY_ONLY_SEEDS or item_lower not in ALL_ASSIGNABLE_ITEMS:
+        msg = "❌ Invalid item name or item is display-only."
+        await (ctx_or_interaction.response.send_message(msg) if isinstance(ctx_or_interaction, discord.Interaction) else ctx_or_interaction.send(msg))
         return
-    if item_lower not in ALL_ASSIGNABLE_ITEMS:
-        msg = f"❌ `{item_name}` is not a recognized game tracking item."
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            await ctx_or_interaction.response.send_message(msg)
-        else:
-            await ctx_or_interaction.send(msg)
-        return
-        
     draft_data["matches"][item_lower] = role.id
     new_embeds = generate_draft_embeds(draft_data["matches"])
-    
     if draft_data["last_msg_id"]:
-        try:
-            channel = ctx_or_interaction.channel
-            old_msg = await channel.fetch_message(draft_data["last_msg_id"])
-            await old_msg.delete()
-        except Exception:
-            pass
-
+        try: await (await ctx_or_interaction.channel.fetch_message(draft_data["last_msg_id"])).delete()
+        except: pass
     success_text = f"✏️ **Draft updated!** Set **{item_lower.title()}** to {role.mention}."
-    
     if isinstance(ctx_or_interaction, discord.Interaction):
         await ctx_or_interaction.response.send_message(content=success_text)
         new_msg = await ctx_or_interaction.channel.send(embeds=new_embeds)
-        draft_data["last_msg_id"] = new_msg.id
     else:
         await ctx_or_interaction.send(content=success_text)
         new_msg = await ctx_or_interaction.send(embeds=new_embeds)
-        draft_data["last_msg_id"] = new_msg.id
+    draft_data["last_msg_id"] = new_msg.id
 
 def execute_approve_draft(guild_id: int):
     global bot_settings, pending_backup, pending_autorole_drafts
     draft_data = pending_autorole_drafts.get(guild_id)
-    if not draft_data or not draft_data["matches"]:
-        return "❌ There is no active auto-role draft pending approval. Run `!autoroles` first!"
-        
+    if not draft_data or not draft_data["matches"]: return "❌ No active draft."
     bot_settings["roles"].update(draft_data["matches"])
     del pending_autorole_drafts[guild_id]
     pending_backup = True
-    return f"✅ **Success!** Automatically saved {len(draft_data['matches'])} tracking roles into the cloud database infrastructure!"
+    return f"✅ Saved {len(draft_data['matches'])} tracking roles!"
 
 def execute_deny_draft(guild_id: int):
     global pending_autorole_drafts
     if guild_id in pending_autorole_drafts:
         del pending_autorole_drafts[guild_id]
-        return "🗑️ Proposed auto-role configuration draft rejected and cleared successfully."
-    return "❌ No active draft structure found to clear."
+        return "🗑️ Draft cleared."
+    return "❌ No active draft structure found."
 
 
 # --- DISCORD SLASH COMMAND INTERFACES ---
+@bot.tree.command(name="currentstock", description="Instantly display the current active shop stock from the Wiki API (Admin Only).")
+async def slash_currentstock(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.response.send_message("❌ Admin privileges (Manage Channels permission) required to execute this command.", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    embeds, error = generate_current_stock_embeds()
+    if error:
+        await interaction.followup.send(content=error)
+    elif embeds:
+        await interaction.followup.send(embeds=embeds)
+
 @bot.tree.command(name="setchannel")
 async def slash_setchannel(interaction: discord.Interaction, category: str, channel: discord.TextChannel):
     if not interaction.user.guild_permissions.manage_channels: return
@@ -545,8 +570,7 @@ async def slash_setrole(interaction: discord.Interaction, item_name: str, role: 
 @bot.tree.command(name="unassigned")
 async def slash_unassigned(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
-    embeds = execute_unassigned()
-    await interaction.response.send_message(embeds=embeds)
+    await interaction.response.send_message(embeds=execute_unassigned())
 
 @bot.tree.command(name="autoroles")
 async def slash_autoroles(interaction: discord.Interaction):
@@ -575,6 +599,16 @@ async def slash_deny(interaction: discord.Interaction):
 
 
 # --- DISCORD PREFIX COMMAND INTERFACES ---
+@bot.command(name="currentstock")
+@commands.has_permissions(manage_channels=True)
+async def cmd_currentstock(ctx):
+    async with ctx.typing():
+        embeds, error = generate_current_stock_embeds()
+        if error:
+            await ctx.send(content=error)
+        elif embeds:
+            await ctx.send(embeds=embeds)
+
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def setchannel(ctx, category: str, channel: discord.TextChannel):
@@ -593,28 +627,23 @@ async def setrole(ctx, *, input_str: str):
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def unassigned(ctx):
-    embeds = execute_unassigned()
-    await ctx.send(embeds=embeds)
+    await ctx.send(embeds=execute_unassigned())
 
 @bot.command(name="autoroles")
 @commands.has_permissions(manage_roles=True)
 async def cmd_autoroles(ctx):
     embeds, has_matches = execute_autoroles_discovery(ctx.guild)
     msg = await ctx.send(embeds=embeds)
-    if has_matches:
-        pending_autorole_drafts[ctx.guild.id]["last_msg_id"] = msg.id
+    if has_matches: pending_autorole_drafts[ctx.guild.id]["last_msg_id"] = msg.id
 
 @bot.command(name="editdraft")
 @commands.has_permissions(manage_roles=True)
 async def cmd_editdraft(ctx, *, input_str: str):
     try:
         parts = input_str.rsplit(" ", 1)
-        if len(parts) < 2:
-            await ctx.send("❌ Format error! Use: `!editdraft [Item Name] [@Role]`")
-            return
         role = await commands.RoleConverter().convert(ctx, parts[1].strip())
         await execute_edit_draft_flow(ctx, ctx.guild.id, parts[0], role)
-    except Exception as e:
+    except:
         await ctx.send("❌ Error modifying draft element: Verification failed.")
 
 @bot.command(name="approve")
