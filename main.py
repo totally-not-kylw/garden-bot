@@ -4,10 +4,10 @@ from discord.ext import commands, tasks
 import os
 import threading
 import json
-import requests
+import aiohttp  # Swapped from requests to prevent blocking the event loop
 import asyncio
 import re
-import time
+import time  # Imported for live timestamp generation and cache busting
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
@@ -200,7 +200,7 @@ async def on_ready():
     check_wiki_stock.start()
     dynamic_cloud_backup_loop.start()
 
-# --- THE WIKI API ENGINE ---
+# --- THE WIKI API ENGINE (OPTIMIZED FOR IMMEDIATE UPDATES) ---
 @tasks.loop(seconds=10)
 async def check_wiki_stock():
     global bot_settings, ready_to_track
@@ -208,14 +208,27 @@ async def check_wiki_stock():
         return
         
     try:
-        headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
-        response = requests.get(API_URL, headers=headers)
-        if response.status_code != 200:
-            return
-            
-        api_data = response.json()
-        stock = api_data.get("stock", {})
+        # Append an aggressive unique timestamp query to force Cloudflare/API to bypass their edge caches
+        cache_buster = int(time.time())
+        separator = "&" if "?" in API_URL else "?"
+        busted_url = f"{API_URL}{separator}_cb={cache_buster}"
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        }
         
+        # Async networking layer to fetch instant responses
+        async with aiohttp.ClientSession() as session:
+            async with session.get(busted_url, headers=headers, timeout=8) as response:
+                if response.status != 200:
+                    return
+                api_data = await response.json()
+            
+        stock = api_data.get("stock", {})
         channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
         saved_roles = bot_settings.get("roles", {})
 
