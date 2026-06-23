@@ -7,7 +7,7 @@ import json
 import requests
 import asyncio
 import re
-import time  # Imported for live timestamp generation
+import time 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
@@ -192,11 +192,9 @@ def generate_current_stock_embeds():
             'If-Modified-Since': 'Wed, 11 Jan 1984 05:00:00 GMT'
         }
         
-        # Method 1: Try sending a POST request to bypass default edge cache policies completely
         try:
             response = requests.post(live_url, headers=headers, json={"refresh": cache_buster}, timeout=4)
             if response.status_code != 200 or not response.json().get("stock"):
-                # Method 2 Fallback: If the endpoint rejects POST requests, try an aggressive custom header GET
                 response = requests.get(live_url, headers=headers, timeout=4)
         except Exception:
             response = requests.get(live_url, headers=headers, timeout=4)
@@ -205,7 +203,9 @@ def generate_current_stock_embeds():
             return None, f"Error: Unable to fetch API data. Status code: {response.status_code}"
             
         stock = response.json().get("stock", {})
-        nearest_5_min_timestamp = int(time.time() // 300) * 300
+        
+        # FIX: Round to the NEAREST 5-minute mark to handle early API interval updates
+        nearest_5_min_timestamp = int((time.time() + 150) // 300) * 300
         timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
         
         embeds = []
@@ -299,7 +299,9 @@ async def check_wiki_stock():
         
         if bot_settings.get("last_stock_items") != current_items_only:
             bot_settings["last_stock_items"] = current_items_only
-            nearest_5_min_timestamp = int(time.time() // 300) * 300
+            
+            # FIX: Round to the NEAREST 5-minute mark to handle early API interval updates
+            nearest_5_min_timestamp = int((time.time() + 150) // 300) * 300
             timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
 
             # Seeds
