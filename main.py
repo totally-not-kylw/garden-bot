@@ -44,7 +44,7 @@ ITEM_EMOJIS = {
     "starfall": "⭐", "blood moon": "🔴", "midas": "🪙"
 }
 
-bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
+bot_settings = {"channels": {"weather": None, "seeds": None, "gear": None, "crates": None, "log": None}, "roles": {}, "last_stock_items": None, "last_weather": None}
 pending_backup = False 
 ready_to_track = False  
 
@@ -157,7 +157,7 @@ async def dynamic_cloud_backup_loop():
     if not pending_backup or not ready_to_track:
         return
 
-    primary_channel_id = bot_settings["channels"].get("seeds") or bot_settings["channels"].get("weather")
+    primary_channel_id = bot_settings["channels"].get("seeds") or bot_settings["channels"].get("weather") or bot_settings["channels"].get("log")
     if not primary_channel_id:
         return
 
@@ -229,32 +229,52 @@ async def check_wiki_stock():
                 api_data = await response.json()
             
         stock = api_data.get("stock", {})
-        channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None})
+        channels = bot_settings.get("channels", {"weather": None, "seeds": None, "gear": None, "crates": None, "log": None})
         saved_roles = bot_settings.get("roles", {})
+        sys_log_channel = bot.get_channel(channels.get("log")) if channels.get("log") else None
 
         # ⛅ WEATHER DETECTION
         weather_data = stock.get("weather", {})
         weather_type = str(weather_data.get("type", "")).lower().strip()
         
-        if weather_type in VALID_WEATHER:
-            if bot_settings.get("last_weather") != weather_type:
-                bot_settings["last_weather"] = weather_type
-                
-                w_id = channels.get("weather")
-                if w_id and (w_channel := bot.get_channel(w_id)):
-                    w_ping = f"<@&{saved_roles[weather_type]}>" if weather_type in saved_roles else ""
-                    w_emoji = ITEM_EMOJIS.get(weather_type, "⛅")
-                    await w_channel.send(content=w_ping, embed=discord.Embed(
-                        title="⛅ Weather Alert!", 
-                        description=f"The environment has changed to: **{weather_type.title()}** {w_emoji}", 
-                        color=discord.Color.blue()
-                    ))
+        if weather_type:
+            # New/Untracked item detection for weather
+            if weather_type not in VALID_WEATHER and sys_log_channel:
+                await sys_log_channel.send(f"⚠️ **New Weather Detected:** `{weather_type}` was found in the API but is missing from your tracking config lists!")
+
+            if weather_type in VALID_WEATHER:
+                if bot_settings.get("last_weather") != weather_type:
+                    bot_settings["last_weather"] = weather_type
+                    
+                    w_id = channels.get("weather")
+                    if w_id and (w_channel := bot.get_channel(w_id)):
+                        w_ping = f"<@&{saved_roles[weather_type]}>" if weather_type in saved_roles else ""
+                        w_emoji = ITEM_EMOJIS.get(weather_type, "⛅")
+                        await w_channel.send(content=w_ping, embed=discord.Embed(
+                            title="⛅ Weather Alert!", 
+                            description=f"The environment has changed to: **{weather_type.title()}** {w_emoji}", 
+                            color=discord.Color.blue()
+                        ))
+
+        # New/Untracked item scanning for regular groups
+        if sys_log_channel:
+            for item_obj in stock.get("seeds", []):
+                n = str(item_obj.get("name", "")).lower().strip()
+                if n and n not in ALL_TRACKED_SEEDS:
+                    await sys_log_channel.send(f"⚠️ **New Seed Detected:** `{item_obj.get('name')}` was found in the API but is missing from your tracking config lists!")
+            for item_obj in stock.get("gear", []):
+                n = str(item_obj.get("name", "")).lower().strip()
+                if n and n not in VALID_GEAR:
+                    await sys_log_channel.send(f"⚠️ **New Gear Detected:** `{item_obj.get('name')}` was found in the API but is missing from your tracking config lists!")
+            for item_obj in stock.get("crates", []):
+                n = str(item_obj.get("name", "")).lower().strip()
+                if n and n not in VALID_CRATES:
+                    await sys_log_channel.send(f"⚠️ **New Crate Detected:** `{item_obj.get('name')}` was found in the API but is missing from your tracking config lists!")
 
         current_items_only = json.dumps({k: stock.get(k) for k in ["seeds", "gear", "crates"]}, sort_keys=True)
         if bot_settings.get("last_stock_items") != current_items_only:
             bot_settings["last_stock_items"] = current_items_only
             
-            # Generate the Unix Timestamp for right now
             nearest_5_min_timestamp = int(time.time() // 300) * 300
             timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
 
@@ -329,6 +349,12 @@ async def execute_setchannel(category: str, channel: discord.TextChannel):
         pending_backup = True
         return f"✅ **{category.capitalize()}** alerts mapped to {channel.mention}! Data will sync momentarily."
     return "❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`."
+
+async def execute_setlogchannel(channel: discord.TextChannel):
+    global pending_backup
+    bot_settings["channels"]["log"] = channel.id
+    pending_backup = True
+    return f"🛡️ **Detection Feed Active:** New and untracked items will be routed directly to {channel.mention}."
 
 async def execute_setrole(item_name: str, role: discord.Role):
     global pending_backup, ready_to_track
@@ -536,10 +562,20 @@ def execute_deny_draft(guild_id: int):
 
 
 # --- DISCORD SLASH COMMAND INTERFACES ---
-@bot.tree.command(name="setchannel")
+@bot.tree.command(name="ping", description="Check bot response health and round-trip websocket heartbeat delay metrics.")
+async def slash_ping(interaction: discord.Interaction):
+    latency_ms = round(bot.latency * 1000)
+    await interaction.response.send_message(f"Pong! 🏓 Delay Factor: `{latency_ms}ms`")
+
+@bot.tree.command(name="setchannel", description="Set standard alerting destination categories.")
 async def slash_setchannel(interaction: discord.Interaction, category: str, channel: discord.TextChannel):
     if not interaction.user.guild_permissions.manage_channels: return
     await interaction.response.send_message(await execute_setchannel(category, channel))
+
+@bot.tree.command(name="setlogchannel", description="Map out the dedicated detection tracking stream channel.")
+async def slash_setlogchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not interaction.user.guild_permissions.manage_channels: return
+    await interaction.response.send_message(await execute_setlogchannel(channel))
 
 @bot.tree.command(name="setrole")
 async def slash_setrole(interaction: discord.Interaction, item_name: str, role: discord.Role):
@@ -579,10 +615,20 @@ async def slash_deny(interaction: discord.Interaction):
 
 
 # --- DISCORD PREFIX COMMAND INTERFACES ---
+@bot.command(name="ping")
+async def cmd_ping(ctx):
+    latency_ms = round(bot.latency * 1000)
+    await ctx.send(f"Pong! 🏓 Delay Factor: `{latency_ms}ms`")
+
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def setchannel(ctx, category: str, channel: discord.TextChannel):
     await ctx.send(await execute_setchannel(category, channel))
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def setlogchannel(ctx, channel: discord.TextChannel):
+    await ctx.send(await execute_setlogchannel(channel))
 
 @bot.command()
 @commands.has_permissions(manage_roles=True)
