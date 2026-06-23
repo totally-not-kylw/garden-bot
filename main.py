@@ -204,14 +204,22 @@ async def on_ready():
 def generate_current_stock_embeds():
     """Hits the API instantly and returns a tuple of (weather_embed, seeds_embed, gear_embed, crates_embed)"""
     try:
+        # Generate an aggressive cache-busting string to force a fresh fetch from the server
+        cache_buster = str(int(time.time() * 1000))
+        separator = "&" if "?" in API_URL else "?"
+        live_url = f"{API_URL}{separator}_cb={cache_buster}"
+
         headers = {
-            'User-Agent': 'Mozilla/5.0', 
+            'User-Agent': f'Mozilla/5.0 TrackerEngine/{cache_buster}', 
             'Accept': 'application/json',
-            'Cache-Control': 'no-cache, no-store, must-revalidate'
+            'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+            'Expires': '0'
         }
-        response = requests.get(API_URL, headers=headers, timeout=4)
+        
+        response = requests.get(live_url, headers=headers, timeout=4)
         if response.status_code != 200:
-            return None, "Error: Unable to fetch API data."
+            return None, f"Error: Unable to fetch API data. Status code: {response.status_code}"
             
         stock = response.json().get("stock", {})
         nearest_5_min_timestamp = int(time.time() // 300) * 300
@@ -272,14 +280,18 @@ async def check_wiki_stock():
         return
         
     try:
+        cache_buster = str(int(time.time() * 1000))
+        separator = "&" if "?" in API_URL else "?"
+        live_url = f"{API_URL}{separator}_cb={cache_buster}"
+
         headers = {
-            'User-Agent': 'Mozilla/5.0', 
+            'User-Agent': f'Mozilla/5.0 TrackerLoop/{cache_buster}', 
             'Accept': 'application/json',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
             'Pragma': 'no-cache',
             'Expires': '0'
         }
-        response = requests.get(API_URL, headers=headers, timeout=4)
+        response = requests.get(live_url, headers=headers, timeout=4)
         if response.status_code != 200:
             return
             
