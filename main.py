@@ -201,15 +201,22 @@ async def on_ready():
     dynamic_cloud_backup_loop.start()
 
 # --- THE WIKI API ENGINE ---
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=5)  # Increased speed to 5 seconds to catch API updates immediately
 async def check_wiki_stock():
     global bot_settings, ready_to_track
     if not ready_to_track:
         return
         
     try:
-        headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
-        response = requests.get(API_URL, headers=headers)
+        # Added Cache-Control headers to stop proxy servers or local network layers from caching stale JSON files
+        headers = {
+            'User-Agent': 'Mozilla/5.0', 
+            'Accept': 'application/json',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        }
+        response = requests.get(API_URL, headers=headers, timeout=4)
         if response.status_code != 200:
             return
             
@@ -237,11 +244,13 @@ async def check_wiki_stock():
                         color=discord.Color.blue()
                     ))
 
+        # We construct a fingerprint based on unique items and quantities to detect restocks instantly
         current_items_only = json.dumps({k: stock.get(k) for k in ["seeds", "gear", "crates"]}, sort_keys=True)
         if bot_settings.get("last_stock_items") != current_items_only:
             bot_settings["last_stock_items"] = current_items_only
             
-            # Generate the Unix Timestamp for right now
+            # --- KEEP THE 5-MINUTE RESTOCK CLOCK GRAPHICS ---
+            # Even if the message drops late or early, this calculations forces the visual UI back onto the target 5 minute window
             nearest_5_min_timestamp = int(time.time() // 300) * 300
             timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
 
