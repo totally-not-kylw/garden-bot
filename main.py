@@ -90,6 +90,7 @@ threading.Thread(target=run_health_server, daemon=True).start()
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True  # Added explicitly to ensure channels map perfectly on boot
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- ACCURATE STRING SIMILARITY ENGINE ---
@@ -135,8 +136,6 @@ def parse_iso_to_discord_timestamp(iso_str: str) -> str:
 async def load_settings_from_discord():
     global bot_settings, ready_to_track
     print("🔄 Initializing Master Database Recovery Engine...")
-    await bot.wait_until_ready()
-    await asyncio.sleep(6)  
     
     found_backup = False
     temp_channels = {}
@@ -213,7 +212,10 @@ async def dynamic_cloud_backup_loop():
 @bot.event
 async def on_ready():
     print(f"✅ GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
-    await load_settings_from_discord()
+    
+    # Run database loading without putting a long pause inside on_ready
+    if not ready_to_track:
+        await load_settings_from_discord()
     
     try:
         synced = await bot.tree.sync()
@@ -221,8 +223,10 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Application command sync failure: {e}")
         
-    check_wiki_stock.start()
-    dynamic_cloud_backup_loop.start()
+    if not check_wiki_stock.is_running():
+        check_wiki_stock.start()
+    if not dynamic_cloud_backup_loop.is_running():
+        dynamic_cloud_backup_loop.start()
 
 # --- DISPATCH CONTROLLER LAYER ---
 async def dispatch_stock_alerts(stock_data, force=False):
