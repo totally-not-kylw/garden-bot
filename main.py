@@ -725,8 +725,8 @@ async def cmd_approve(ctx):
 
 @bot.command(name="deny")
 @commands.has_permissions(manage_roles=True)
-def cmd_deny(ctx):
-    ctx.send(execute_deny_draft(ctx.guild.id))
+async def cmd_deny(ctx):
+    await ctx.send(execute_deny_draft(ctx.guild.id))
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
