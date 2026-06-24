@@ -19,7 +19,7 @@ DISPLAY_ONLY_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato"]
 VALID_SEEDS = ["apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "venom spitter", "moon bloom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
-VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "blood moon", "midas"]
+VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "blood moon", "midas", "midas touch", "gold moon", "goldmoon", "aurora", "aurora borealis", "rainbow moon", "rainbow-moon"]
 
 ALL_TRACKED_SEEDS = VALID_SEEDS + DISPLAY_ONLY_SEEDS
 ALL_ASSIGNABLE_ITEMS = VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER
@@ -42,7 +42,9 @@ ITEM_EMOJIS = {
     "seesaw crate": "📦", "conveyor crate": "📦", "owner door crate": "🚪", 
     "bear trap crate": "🪤", "fence crate": "🚧", "teleporter pad crate": "🌀",
     "rain": "🌧️", "lightning": "🌩️", "snowfall": "❄️", "rainbow": "🌈", 
-    "starfall": "⭐", "blood moon": "🔴", "midas": "🪙"
+    "starfall": "⭐", "blood moon": "🔴", "midas": "🪙", "midas touch": "🪙",
+    "gold moon": "🪙", "goldmoon": "🪙", "aurora": "🌌", "aurora borealis": "🌌",
+    "rainbow moon": "🌈🌙", "rainbow-moon": "🌈🌙"
 }
 
 bot_settings = {
@@ -50,11 +52,14 @@ bot_settings = {
     "roles": {}, 
     "ignored_items": [],
     "last_stock_items": None, 
-    "last_weather": None
+    "last_weather": None,
+    "active_weather_msg_id": None,
+    "active_weather_end_ts": None,
+    "active_weather_type": None
 }
 pending_backup = False 
 ready_to_track = False  
-reported_missing_items = set() # Local memory tracker to completely stop duplicate message spam
+reported_missing_items = set()
 
 pending_autorole_drafts = {}
 
@@ -90,7 +95,7 @@ threading.Thread(target=run_health_server, daemon=True).start()
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True  # Added explicitly to ensure channels map perfectly on boot
+intents.guilds = True  
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- ACCURATE STRING SIMILARITY ENGINE ---
@@ -121,16 +126,13 @@ def calculate_match_score(item: str, role_name: str) -> float:
         
     return len(intersection) / max(len(item_tokens), len(role_tokens))
 
-def parse_iso_to_discord_timestamp(iso_str: str) -> str:
-    """Parses API ISO 8601 strings into functional local Discord client timestamps."""
+def parse_iso_to_unix(iso_str: str) -> int:
     try:
-        if not iso_str: return "Unknown"
+        if not iso_str: return 0
         clean_iso = iso_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean_iso)
-        unix_ts = int(dt.timestamp())
-        return f"<t:{unix_ts}:t> (<t:{unix_ts}:R>)"
+        return int(datetime.fromisoformat(clean_iso).timestamp())
     except Exception:
-        return "Unknown"
+        return 0
 
 # --- MASTER ANTI-WIPE STORAGE ENGINE ---
 async def load_settings_from_discord():
@@ -213,7 +215,6 @@ async def dynamic_cloud_backup_loop():
 async def on_ready():
     print(f"✅ GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
     
-    # Run database loading as a background task to prevent blocking the boot sequence
     if not ready_to_track:
         asyncio.create_task(load_settings_from_discord())
     
@@ -241,6 +242,21 @@ async def dispatch_stock_alerts(stock_data, force=False):
     weather_type = str(weather_data.get("type", "")).lower().strip()
     
     if weather_type:
+        lookup_type = weather_type
+        # Fallback normalizations for matching roles flexibly
+        if weather_type == "midas touch" and "midas touch" not in saved_roles and "midas" in saved_roles:
+            lookup_type = "midas"
+        elif weather_type == "aurora borealis" and "aurora borealis" not in saved_roles and "aurora" in saved_roles:
+            lookup_type = "aurora"
+        elif weather_type == "rainbow-moon" and "rainbow-moon" not in saved_roles and "rainbow moon" in saved_roles:
+            lookup_type = "rainbow moon"
+        elif weather_type == "rainbow moon" and "rainbow moon" not in saved_roles and "rainbow-moon" in saved_roles:
+            lookup_type = "rainbow-moon"
+        elif weather_type == "goldmoon" and "goldmoon" not in saved_roles and "gold moon" in saved_roles:
+            lookup_type = "gold moon"
+        elif weather_type == "gold moon" and "gold moon" not in saved_roles and "goldmoon" in saved_roles:
+            lookup_type = "goldmoon"
+
         if weather_type not in VALID_WEATHER and weather_type not in ignored and sys_log_channel:
             if force or weather_type not in reported_missing_items:
                 await sys_log_channel.send(f"⚠️ **New Weather Detected:** `{weather_type}` was found in the API but is missing from your tracking config lists!")
@@ -252,20 +268,28 @@ async def dispatch_stock_alerts(stock_data, force=False):
                 
                 w_id = channels.get("weather")
                 if w_id and (w_channel := bot.get_channel(w_id)):
-                    w_ping = f"<@&{saved_roles[weather_type]}>" if weather_type in saved_roles else ""
+                    w_ping = f"<@&{saved_roles[lookup_type]}>" if lookup_type in saved_roles else ""
                     w_emoji = ITEM_EMOJIS.get(weather_type, "⛅")
                     
-                    start_time = parse_iso_to_discord_timestamp(weather_data.get("start"))
-                    end_time = parse_iso_to_discord_timestamp(weather_data.get("end"))
-                    time_header = f"⏰ **Started At:** {start_time}\n🛑 **Ends:** {end_time}\n\n"
+                    start_unix = parse_iso_to_unix(weather_data.get("startsAt"))
+                    end_unix = parse_iso_to_unix(weather_data.get("endsAt"))
                     
-                    await w_channel.send(content=w_ping, embed=discord.Embed(
+                    start_str = f"<t:{start_unix}:t> (<t:{start_unix}:R>)" if start_unix else "Unknown"
+                    end_str = f"<t:{end_unix}:t> (<t:{end_unix}:R>)" if end_unix else "Unknown"
+                    
+                    time_header = f"⏰ **Started At:** {start_str}\n🛑 **Ends:** {end_str}\n\n"
+                    
+                    msg = await w_channel.send(content=w_ping, embed=discord.Embed(
                         title="⛅ Weather Alert!", 
                         description=time_header + f"The environment has changed to: **{weather_type.title()}** {w_emoji}", 
                         color=discord.Color.blue()
                     ))
+                    
+                    bot_settings["active_weather_msg_id"] = msg.id
+                    bot_settings["active_weather_end_ts"] = end_unix
+                    bot_settings["active_weather_type"] = weather_type
 
-    # Unknown/Missing element scanner for regular lists
+    # Unknown element scanner
     if sys_log_channel:
         for cat, list_key, tracked_list in [("Seed", "seeds", ALL_TRACKED_SEEDS), ("Gear", "gear", VALID_GEAR), ("Crate", "crates", VALID_CRATES)]:
             for item_obj in stock_data.get(list_key, []):
@@ -279,13 +303,12 @@ async def dispatch_stock_alerts(stock_data, force=False):
     if force or bot_settings.get("last_stock_items") != current_items_only:
         if not force:
             bot_settings["last_stock_items"] = current_items_only
-            # Completely reset missing item list since rotation shifted
             reported_missing_items.clear()
         
         nearest_5_min_timestamp = int(time.time() // 300) * 300
         timestamp_string = f"Stock At: <t:{nearest_5_min_timestamp}:t> (<t:{nearest_5_min_timestamp}:R>)\n\n"
 
-        # 🌱 SEEDS DETECTION
+        # 🌱 SEEDS
         seed_pings, seed_list_str = [], []
         for seed_obj in stock_data.get("seeds", []):
             seed_name = seed_obj.get("name", "")
@@ -303,7 +326,7 @@ async def dispatch_stock_alerts(stock_data, force=False):
                     title="🌱 Seed Stock!", description=timestamp_string + "\n".join(seed_list_str), color=discord.Color.green()
                 ))
 
-        # 🛠️ GEAR DETECTION
+        # 🛠️ GEAR
         gear_pings, gear_list_str = [], []
         for gear_obj in stock_data.get("gear", []):
             gear_name = gear_obj.get("name", "")
@@ -321,7 +344,7 @@ async def dispatch_stock_alerts(stock_data, force=False):
                     title="🛠️ Gear Stock!", description=timestamp_string + "\n".join(gear_list_str), color=discord.Color.orange()
                 ))
 
-        # 📦 CRATES DETECTION
+        # 📦 CRATES
         crate_pings, crate_list_str = [], []
         for crate_obj in stock_data.get("crates", []):
             crate_name = crate_obj.get("name", "")
@@ -339,10 +362,10 @@ async def dispatch_stock_alerts(stock_data, force=False):
                     title="📦 Crate Shop!", description=timestamp_string + "\n".join(crate_list_str), color=discord.Color.gold()
                 ))
 
-# --- THE WIKI API ENGINE (OPTIMIZED FOR IMMEDIATE UPDATES) ---
+# --- THE WIKI API ENGINE ---
 @tasks.loop(seconds=10)
 async def check_wiki_stock():
-    global ready_to_track
+    global ready_to_track, bot_settings
     if not ready_to_track:
         return
         
@@ -352,11 +375,9 @@ async def check_wiki_stock():
         busted_url = f"{API_URL}{separator}_cb={cache_buster}"
 
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0',
             'Accept': 'application/json',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
+            'Cache-Control': 'no-cache, no-store, must-revalidate'
         }
         
         async with aiohttp.ClientSession() as session:
@@ -367,10 +388,41 @@ async def check_wiki_stock():
             
         if api_data.get("stock"):
             await dispatch_stock_alerts(api_data.get("stock"))
+            
+        # --- EXPIRED WEATHER AUTO-EDIT HANDLER ---
+        if bot_settings.get("active_weather_msg_id") and bot_settings.get("active_weather_end_ts"):
+            current_time = int(time.time())
+            if current_time >= bot_settings["active_weather_end_ts"]:
+                w_id = bot_settings["channels"].get("weather")
+                if w_id and (w_channel := bot.get_channel(w_id)):
+                    try:
+                        old_msg = await w_channel.fetch_message(bot_settings["active_weather_msg_id"])
+                        if old_msg and old_msg.embeds:
+                            old_embed = old_msg.embeds[0]
+                            w_type = bot_settings["active_weather_type"]
+                            w_emoji = ITEM_EMOJIS.get(w_type, "⛅")
+                            
+                            lines = old_embed.description.split("\n")
+                            start_line = lines[0] if len(lines) > 0 else "Unknown"
+                            
+                            end_unix = bot_settings["active_weather_end_ts"]
+                            updated_description = f"{start_line}\n🛑 **Ended:** <t:{end_unix}:t> (<t:{end_unix}:R>)\n\nThe environment has changed to: **{w_type.title()}** {w_emoji}"
+                            
+                            await old_msg.edit(embed=discord.Embed(
+                                title="🛑 Weather Ended!",
+                                description=updated_description,
+                                color=discord.Color.dark_gray()
+                            ))
+                    except Exception as e:
+                        pass
+                bot_settings["active_weather_msg_id"] = None
+                bot_settings["active_weather_end_ts"] = None
+                bot_settings["active_weather_type"] = None
+                
     except Exception as e:
         print(f"Error reading live wiki api: {e}")
 
-# --- BACKEND REUSABLE CONTROLLERS ---
+# --- BACKEND CONTROLLERS ---
 async def execute_setchannel(category: str, channel: discord.TextChannel):
     global pending_backup
     category = category.lower().strip()
@@ -442,14 +494,10 @@ def execute_unassigned():
     if unassigned_weather: embed.add_field(name="⛅ Weather", value="\n".join([f"• {w.title()} {ITEM_EMOJIS.get(w, '')}" for w in unassigned_weather]), inline=False)
     return [embed]
 
-# --- 🤖 HIGHLY ACCURATE AUTO-ROLE MATCHING CONTROLLERS ---
+# --- AUTO-ROLE MATCHING CONTROLLERS ---
 def generate_draft_embeds(draft_matches):
-    """Combines categories into two larger embeds to safely prevent PC embed limits and mobile height cutoffs."""
     embeds_list = []
-    
-    # --- EMBED 1: SEEDS & GEAR ---
-    lines_embed1 = []
-    lines_embed1.append("### 🌱 Seeds")
+    lines_embed1 = ["### 🌱 Seeds"]
     has_seeds = False
     for item in VALID_SEEDS:
         if item in draft_matches:
@@ -458,10 +506,7 @@ def generate_draft_embeds(draft_matches):
             lines_embed1.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_seeds = True
     if not has_seeds: lines_embed1.append("*No seeds drafted.*")
-        
-    lines_embed1.append("\n" + "─" * 15 + "\n")
-    
-    lines_embed1.append("### 🛠️ Gear")
+    lines_embed1.append("\n" + "─" * 15 + "\n" + "### 🛠️ Gear")
     has_gear = False
     for item in VALID_GEAR:
         if item in draft_matches:
@@ -470,14 +515,11 @@ def generate_draft_embeds(draft_matches):
             lines_embed1.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_gear = True
     if not has_gear: lines_embed1.append("*No gear drafted.*")
-
     embed1 = discord.Embed(description="\n".join(lines_embed1), color=discord.Color.green())
     embed1.set_author(name="🤖 Auto-Role Matcher Proposals", icon_url="https://i.imgur.com/vH3C1tC.png")
     embeds_list.append(embed1)
 
-    # --- EMBED 2: CRATES & WEATHER ---
-    lines_embed2 = []
-    lines_embed2.append("### 📦 Crates")
+    lines_embed2 = ["### 📦 Crates"]
     has_crates = False
     for item in VALID_CRATES:
         if item in draft_matches:
@@ -486,10 +528,7 @@ def generate_draft_embeds(draft_matches):
             lines_embed2.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_crates = True
     if not has_crates: lines_embed2.append("*No crates drafted.*")
-        
-    lines_embed2.append("\n" + "─" * 15 + "\n")
-    
-    lines_embed2.append("### ⛅ Weather")
+    lines_embed2.append("\n" + "─" * 15 + "\n" + "### ⛅ Weather")
     has_weather = False
     for item in VALID_WEATHER:
         if item in draft_matches:
@@ -498,42 +537,26 @@ def generate_draft_embeds(draft_matches):
             lines_embed2.append(f"• **{item.title()}** {emoji} ➡️ <@&{role_id}>")
             has_weather = True
     if not has_weather: lines_embed2.append("*No weather drafted.*")
-
     embed2 = discord.Embed(description="\n".join(lines_embed2), color=discord.Color.gold())
-    embed2.add_field(
-        name="💡 Instructions", 
-        value="* Need to change something? `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to save, or `!deny` to wipe.", 
-        inline=False
-    )
+    embed2.add_field(name="💡 Instructions", value="* Need to change something? `!editdraft [Item Name] [@Role]`\n* Ready? Type `!approve` to save, or `!deny` to wipe.", inline=False)
     embeds_list.append(embed2)
-    
     return embeds_list
 
 def execute_autoroles_discovery(guild: discord.Guild):
     global pending_autorole_drafts
     draft_matches = {}
-    
     for item in ALL_ASSIGNABLE_ITEMS:
         best_role = None
         highest_score = 0.0
-        
         for role in guild.roles:
             if role.is_default(): continue
             score = calculate_match_score(item, role.name)
             if score > highest_score and score >= 0.40: 
                 highest_score = score
                 best_role = role
-                
         if best_role: draft_matches[item] = best_role.id
-
     if not draft_matches:
-        fallback_embed = discord.Embed(
-            title="🔍 Auto-Role Finder Results",
-            description="I scanned all roles using enhanced string similarity but couldn't find any robust matches on my lists.",
-            color=discord.Color.orange()
-        )
-        return [fallback_embed], False
-
+        return [discord.Embed(title="🔍 Auto-Role Finder Results", description="I scanned all roles using enhanced string similarity but couldn't find any robust matches.", color=discord.Color.orange())], False
     pending_autorole_drafts[guild.id] = {"matches": draft_matches, "last_msg_id": None}
     return generate_draft_embeds(draft_matches), True
 
@@ -545,7 +568,6 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
         if isinstance(ctx_or_interaction, discord.Interaction): await ctx_or_interaction.response.send_message(msg)
         else: await ctx_or_interaction.send(msg)
         return
-        
     item_lower = item_name.strip().lower()
     if item_lower in DISPLAY_ONLY_SEEDS:
         msg = f"❌ Role assignment disabled for `{item_name}`. This item is display-only."
@@ -557,19 +579,12 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
         if isinstance(ctx_or_interaction, discord.Interaction): await ctx_or_interaction.response.send_message(msg)
         else: await ctx_or_interaction.send(msg)
         return
-        
     draft_data["matches"][item_lower] = role.id
     new_embeds = generate_draft_embeds(draft_data["matches"])
-    
     if draft_data["last_msg_id"]:
-        try:
-            channel = ctx_or_interaction.channel
-            old_msg = await channel.fetch_message(draft_data["last_msg_id"])
-            await old_msg.delete()
+        try: await ctx_or_interaction.channel.fetch_message(draft_data["last_msg_id"]).delete()
         except Exception: pass
-
     success_text = f"✏️ **Draft updated!** Set **{item_lower.title()}** to {role.mention}."
-    
     if isinstance(ctx_or_interaction, discord.Interaction):
         await ctx_or_interaction.response.send_message(content=success_text)
         new_msg = await ctx_or_interaction.channel.send(embeds=new_embeds)
@@ -584,7 +599,6 @@ def execute_approve_draft(guild_id: int):
     draft_data = pending_autorole_drafts.get(guild_id)
     if not draft_data or not draft_data["matches"]:
         return "❌ There is no active auto-role draft pending approval. Run `!autoroles` first!"
-        
     bot_settings["roles"].update(draft_data["matches"])
     del pending_autorole_drafts[guild_id]
     pending_backup = True
@@ -596,7 +610,6 @@ def execute_deny_draft(guild_id: int):
         del pending_autorole_drafts[guild_id]
         return "🗑️ Proposed auto-role configuration draft rejected and cleared successfully."
     return "❌ No active draft structure found to clear."
-
 
 # --- DISCORD SLASH COMMAND INTERFACES ---
 @bot.tree.command(name="ping", description="Check bot response health delay metrics.")
@@ -622,8 +635,7 @@ async def slash_ignoremissing(interaction: discord.Interaction, item_name: str):
 async def slash_sendstock(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_channels: return
     await interaction.response.defer()
-    msg = await execute_sendstock()
-    await interaction.followup.send(msg)
+    await interaction.followup.send(await execute_sendstock())
 
 @bot.tree.command(name="setrole")
 async def slash_setrole(interaction: discord.Interaction, item_name: str, role: discord.Role):
@@ -645,7 +657,6 @@ async def slash_autoroles(interaction: discord.Interaction):
         pending_autorole_drafts[interaction.guild_id]["last_msg_id"] = msg.id
 
 @bot.tree.command(name="editdraft")
-@app_commands.describe(item_name="The item name to override", role="The new role to couple with it")
 async def slash_editdraft(interaction: discord.Interaction, item_name: str, role: discord.Role):
     if not interaction.user.guild_permissions.manage_roles: return
     await execute_edit_draft_flow(interaction, interaction.guild_id, item_name, role)
@@ -659,7 +670,6 @@ async def slash_approve(interaction: discord.Interaction):
 async def slash_deny(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_roles: return
     await interaction.response.send_message(execute_deny_draft(interaction.guild_id))
-
 
 # --- DISCORD PREFIX COMMAND INTERFACES ---
 @bot.command(name="ping")
@@ -693,7 +703,7 @@ async def setrole(ctx, *, input_str: str):
         parts = input_str.rsplit(" ", 1)
         role = await commands.RoleConverter().convert(ctx, parts[1].strip())
         await ctx.send(await execute_setrole(parts[0], role))
-    except Exception:
+    except Exception as e:
         await ctx.send("❌ Error updating role: Verification failed.")
 
 @bot.command()
@@ -706,8 +716,7 @@ async def unassigned(ctx):
 async def cmd_autoroles(ctx):
     embeds, has_matches = execute_autoroles_discovery(ctx.guild)
     msg = await ctx.send(embeds=embeds)
-    if has_matches:
-        pending_autorole_drafts[ctx.guild.id]["last_msg_id"] = msg.id
+    if has_matches: pending_autorole_drafts[ctx.guild.id]["last_msg_id"] = msg.id
 
 @bot.command(name="editdraft")
 @commands.has_permissions(manage_roles=True)
