@@ -19,7 +19,7 @@ DISPLAY_ONLY_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato"]
 VALID_SEEDS = ["apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "venom spitter", "moon bloom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
-VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "blood moon", "midas", "midas touch", "gold moon", "goldmoon", "aurora", "aurora borealis", "rainbow moon", "rainbow-moon"]
+VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "bloodmoon", "midas", "midas touch", "gold moon", "goldmoon", "aurora", "aurora borealis", "rainbow moon", "rainbow-moon"]
 
 ALL_TRACKED_SEEDS = VALID_SEEDS + DISPLAY_ONLY_SEEDS
 ALL_ASSIGNABLE_ITEMS = VALID_SEEDS + VALID_GEAR + VALID_CRATES + VALID_WEATHER
@@ -42,7 +42,7 @@ ITEM_EMOJIS = {
     "seesaw crate": "📦", "conveyor crate": "📦", "owner door crate": "🚪", 
     "bear trap crate": "🪤", "fence crate": "🚧", "teleporter pad crate": "🌀",
     "rain": "🌧️", "lightning": "🌩️", "snowfall": "❄️", "rainbow": "🌈", 
-    "starfall": "⭐", "blood moon": "🔴", "midas": "🪙", "midas touch": "🪙",
+    "starfall": "⭐", "bloodmoon": "🔴", "midas": "🪙", "midas touch": "🪙",
     "gold moon": "🪙", "goldmoon": "🪙", "aurora": "🌌", "aurora borealis": "🌌",
     "rainbow moon": "🌈🌙", "rainbow-moon": "🌈🌙"
 }
@@ -745,7 +745,7 @@ async def cmd_deny(ctx):
 @commands.has_permissions(manage_channels=True)
 async def test(ctx):
     channels = bot_settings.get("channels", {})
-    for cat, name, item, col in [("weather", "⛅ Weather Alert! (TEST)", "Blood Moon 🔴", discord.Color.blue()),
+    for cat, name, item, col in [("weather", "⛅ Weather Alert! (TEST)", "Bloodmoon 🔴", discord.Color.blue()),
                                  ("seeds", "🌱 Seed Stock! (TEST)", "• Bamboo 🎋 **(x2)**", discord.Color.green()),
                                  ("gear", "🛠️ Gear Stock! (TEST)", "• Trowel 🥄 **(x1)**", discord.Color.orange()),
                                  ("crates", "📦 Crate Shop! (TEST)", "• Ladder Crate 🪜 **(x3)**", discord.Color.gold())]:
