@@ -18,7 +18,7 @@ API_URL = os.getenv("API_KEY")
 DISPLAY_ONLY_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato"]
 VALID_SEEDS = ["apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "venom spitter", "moon bloom", "dragon's breath"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
-VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "fence crate", "teleporter pad crate"]
+VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "picture frame crate", "fence crate", "teleporter pad crate"]
 VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "bloodmoon", "midas", "midas touch", "gold moon", "goldmoon", "aurora", "aurora borealis", "rainbow moon", "rainbow-moon"]
 
 ALL_TRACKED_SEEDS = VALID_SEEDS + DISPLAY_ONLY_SEEDS
@@ -40,7 +40,7 @@ ITEM_EMOJIS = {
     "ladder crate": "🪜", "bench crate": "📦", "light crate": "💡", "sign crate": "🪧", 
     "arch crate": "📦", "roleplay crate": "🎭", "bridge crate": "🌉", "spring crate": "📦", 
     "seesaw crate": "📦", "conveyor crate": "📦", "owner door crate": "🚪", 
-    "bear trap crate": "🪤", "fence crate": "🚧", "teleporter pad crate": "🌀",
+    "bear trap crate": "🪤", "picture frame crate": "🖼️", "fence crate": "🚧", "teleporter pad crate": "🌀",
     "rain": "🌧️", "lightning": "🌩️", "snowfall": "❄️", "rainbow": "🌈", 
     "starfall": "⭐", "bloodmoon": "🔴", "midas": "🪙", "midas touch": "🪙",
     "gold moon": "🪙", "goldmoon": "🪙", "aurora": "🌌", "aurora borealis": "🌌",
