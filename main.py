@@ -4,10 +4,10 @@ from discord.ext import commands, tasks
 import os
 import threading
 import json
-import aiohttp  # Swapped from requests to prevent blocking the event loop
+import aiohttp
 import asyncio
 import re
-import time  # Imported for live timestamp generation and cache busting
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -16,7 +16,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 API_URL = os.getenv("API_KEY")
 
 DISPLAY_ONLY_SEEDS = ["carrot", "strawberry", "blueberry", "tulip", "tomato"]
-VALID_SEEDS = ["apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "venom spitter", "moon bloom", "dragon's breath"]
+VALID_SEEDS = ["apple", "bamboo", "grape", "corn", "cactus", "pineapple", "mushroom", "green bean", "banana", "coconut", "mango", "dragon fruit", "acorn", "cherry", "sunflower", "venus fly trap", "pomegranate", "poison apple", "venom spitter", "moon bloom", "dragon's breath", "hypno bloom"]
 VALID_GEAR = ["common watering can", "common sprinkler", "uncommon sprinkler", "trowel", "rare sprinkler", "jump mushroom", "speed mushroom", "shrink mushroom", "supersize mushroom", "gnome", "flashbang", "basic pot", "legendary sprinkler", "invisibility mushroom", "teleporter", "super watering can", "super sprinkler"]
 VALID_CRATES = ["ladder crate", "bench crate", "light crate", "sign crate", "arch crate", "roleplay crate", "bridge crate", "spring crate", "seesaw crate", "conveyor crate", "owner door crate", "bear trap crate", "picture frame crate", "fence crate", "teleporter pad crate"]
 VALID_WEATHER = ["rain", "lightning", "snowfall", "rainbow", "starfall", "bloodmoon", "midas", "midas touch", "gold moon", "goldmoon", "aurora", "aurora borealis", "rainbow moon", "rainbow-moon"]
@@ -31,7 +31,8 @@ ITEM_EMOJIS = {
     "pineapple": "🍍", "mushroom": "🍄", "green bean": "🫛", "banana": "🍌", 
     "coconut": "🥥", "mango": "🥭", "dragon fruit": "🐉", "acorn": "🌰", 
     "cherry": "🍒", "sunflower": "🌻", "venus fly trap": "🪴", "pomegranate": "🍎", 
-    "poison apple": "🍏", "venom spitter": "🕷️","moon bloom": "🌸", "dragon's breath": "🐲",
+    "poison apple": "🍏", "venom spitter": "🕷️", "moon bloom": "🌸", "dragon's breath": "🐲",
+    "hypno bloom": "🌀",
     "common watering can": "💧", "common sprinkler": "💧", "uncommon sprinkler": "⚙️", 
     "trowel": "🥄", "rare sprinkler": "⚡", "jump mushroom": "🍄", "speed mushroom": "🍄", 
     "shrink mushroom": "🍄", "supersize mushroom": "🍄", "gnome": "🎅", "flashbang": "💥", 
@@ -98,6 +99,13 @@ intents.message_content = True
 intents.guilds = True  
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# --- AUTOCOMPLETE FILTER LOGIC ---
+async def item_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return [
+        app_commands.Choice(name=item.title(), value=item)
+        for item in ALL_ASSIGNABLE_ITEMS if current.lower() in item.lower()
+    ][:25]
+
 # --- ACCURATE STRING SIMILARITY ENGINE ---
 def clean_string(s: str) -> str:
     s = s.lower()
@@ -134,89 +142,56 @@ def parse_iso_to_unix(iso_str: str) -> int:
     except Exception:
         return 0
 
-# --- MASTER ANTI-WIPE STORAGE ENGINE ---
-async def load_settings_from_discord():
+# --- LOCAL FILE STORAGE DATABASE ---
+async def load_settings_from_file():
     global bot_settings, ready_to_track
-    print("🔄 Initializing Master Database Recovery Engine...")
+    print("🔄 Initializing File Storage Database Engine...")
     
-    found_backup = False
-    temp_channels = {}
-    temp_roles = {}
-    temp_ignored = []
-
-    for guild in bot.guilds:
-        for channel in guild.text_channels:
-            if channel.topic and "GAG2_DATA:" in channel.topic:
-                try:
-                    raw_json = channel.topic.split("GAG2_DATA:")[1].strip()
-                    saved_data = json.loads(raw_json)
-                    
-                    if "channels" in saved_data:
-                        for k, v in saved_data["channels"].items():
-                            if v: temp_channels[k] = v
-                    if "roles" in saved_data:
-                        for k, v in saved_data["roles"].items():
-                            if v: temp_roles[k.lower().strip()] = v
-                    if "ignored_items" in saved_data:
-                        temp_ignored = saved_data["ignored_items"]
-                    
-                    found_backup = True
-                    print(f"📖 Located save registry cluster on channel: #{channel.name}")
-                except Exception as e:
-                    print(f"⚠️ Error processing text stream on channel #{channel.name}: {e}")
-
-    if found_backup:
-        bot_settings["channels"].update(temp_channels)
-        bot_settings["roles"].update(temp_roles)
-        bot_settings["ignored_items"] = list(set(temp_ignored))
-        print(f"✅ Recovery complete. Restored {len(bot_settings['roles'])} roles and {len(bot_settings['ignored_items'])} ignored elements.")
+    if os.path.exists("settings.json"):
+        try:
+            with open("settings.json", "r") as f:
+                saved_data = json.load(f)
+                
+            if "channels" in saved_data:
+                bot_settings["channels"].update(saved_data["channels"])
+            if "roles" in saved_data:
+                bot_settings["roles"].update({k.lower().strip(): v for k, v in saved_data["roles"].items()})
+            if "ignored_items" in saved_data:
+                bot_settings["ignored_items"] = list(set(saved_data["ignored_items"]))
+                
+            print(f"✅ Recovery complete. Restored {len(bot_settings['roles'])} roles and {len(bot_settings['ignored_items'])} ignored elements.")
+        except Exception as e:
+            print(f"⚠️ Error loading settings.json: {e}")
     else:
-        print("⚠️ Recovery loop finished. No serialized configuration records found.")
+        print("⚠️ No settings.json save registry records located. Starting fresh.")
 
     ready_to_track = True
 
 @tasks.loop(minutes=1)
-async def dynamic_cloud_backup_loop():
+async def local_storage_backup_loop():
     global bot_settings, pending_backup, ready_to_track
     if not pending_backup or not ready_to_track:
         return
 
-    primary_channel_id = bot_settings["channels"].get("seeds") or bot_settings["channels"].get("weather") or bot_settings["channels"].get("log")
-    if not primary_channel_id:
-        return
-
-    channel = bot.get_channel(primary_channel_id)
-    if channel:
-        clean_topic = ""
-        if channel.topic and "GAG2_DATA:" in channel.topic:
-            clean_topic = channel.topic.split("GAG2_DATA:")[0].strip()
-        elif channel.topic:
-            clean_topic = channel.topic.strip()
-
+    try:
         backup_package = {
             "channels": bot_settings["channels"],
             "roles": bot_settings["roles"],
             "ignored_items": bot_settings["ignored_items"]
         }
-        serialized = json.dumps(backup_package)
-        new_topic = f"{clean_topic} | GAG2_DATA:{serialized}".strip(" | ")
-        
-        try:
-            await channel.edit(topic=new_topic)
-            print("💾 Global database configuration safely secured to cloud channel topic.")
-            pending_backup = False
-        except discord.Forbidden:
-            print("❌ Cannot sync backup: Missing permissions to edit channel topic.")
-        except discord.HTTPException as e:
-            if e.status == 429:
-                print("⚠️ Sync postponed: Hitting Discord rate limits.")
+        with open("settings.json", "w") as f:
+            json.dump(backup_package, f, indent=4)
+        print("💾 Local settings.json configuration safely secured to persistent file system storage.")
+        pending_backup = False
+    except Exception as e:
+        print(f"❌ Cannot save to settings.json: {e}")
 
 @bot.event
 async def on_ready():
     print(f"✅ GAG2 Wiki-API Tracker Connected: Logged in as {bot.user.name}")
     
     if not ready_to_track:
-        asyncio.create_task(load_settings_from_discord())
+        asyncio.create_task(load_settings_from_file())
     
     try:
         synced = await bot.tree.sync()
@@ -226,8 +201,8 @@ async def on_ready():
         
     if not check_wiki_stock.is_running():
         check_wiki_stock.start()
-    if not dynamic_cloud_backup_loop.is_running():
-        dynamic_cloud_backup_loop.start()
+    if not local_storage_backup_loop.is_running():
+        local_storage_backup_loop.start()
 
 # --- DISPATCH CONTROLLER LAYER ---
 async def dispatch_stock_alerts(stock_data, force=False):
@@ -240,6 +215,8 @@ async def dispatch_stock_alerts(stock_data, force=False):
     # ⛅ WEATHER DETECTION
     weather_data = stock_data.get("weather", {})
     weather_type = str(weather_data.get("type", "")).lower().strip()
+    if weather_type == "blood moon":
+        weather_type = "bloodmoon"
     
     if weather_type:
         lookup_type = weather_type
@@ -429,7 +406,7 @@ async def execute_setchannel(category: str, channel: discord.TextChannel):
     if category in ["weather", "seeds", "gear", "crates"]:
         bot_settings["channels"][category] = channel.id
         pending_backup = True
-        return f"✅ **{category.capitalize()}** alerts mapped to {channel.mention}! Data will sync momentarily."
+        return f"✅ **{category.capitalize()}** alerts mapped to {channel.mention}! Data saved locally."
     return "❌ Invalid category! Use `weather`, `seeds`, `gear`, or `crates`."
 
 async def execute_setlogchannel(channel: discord.TextChannel):
@@ -445,7 +422,7 @@ async def execute_ignoremissing(item_name: str):
     if item_lower not in bot_settings["ignored_items"]:
         bot_settings["ignored_items"].append(item_lower)
         pending_backup = True
-        return f"🔕 **Muted Alerts:** `{item_name}` added to ignore configurations and will no longer trigger warnings."
+        return f"🔕 **Muted Alerts:** `{item_name}` added to ignore configurations."
     return f"ℹ️ `{item_name}` is already on the ignore configurations registry."
 
 async def execute_sendstock():
@@ -469,6 +446,8 @@ async def execute_setrole(item_name: str, role: discord.Role):
     if not ready_to_track:
         return "❌ Storage engine is busy starting up. Please wait 5 seconds."
     item_lower = item_name.strip().lower()
+    if item_lower == "blood moon":
+        item_lower = "bloodmoon"
     if item_lower in DISPLAY_ONLY_SEEDS:
         return f"❌ Role assignment disabled for `{item_name}`. This item is display-only."
     if item_lower not in ALL_ASSIGNABLE_ITEMS:
@@ -556,7 +535,7 @@ def execute_autoroles_discovery(guild: discord.Guild):
                 best_role = role
         if best_role: draft_matches[item] = best_role.id
     if not draft_matches:
-        return [discord.Embed(title="🔍 Auto-Role Finder Results", description="I scanned all roles using enhanced string similarity but couldn't find any robust matches.", color=discord.Color.orange())], False
+        return [discord.Embed(title="🔍 Auto-Role Finder Results", description="I scanned all roles but couldn't find any robust matches.", color=discord.Color.orange())], False
     pending_autorole_drafts[guild.id] = {"matches": draft_matches, "last_msg_id": None}
     return generate_draft_embeds(draft_matches), True
 
@@ -569,6 +548,8 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
         else: await ctx_or_interaction.send(msg)
         return
     item_lower = item_name.strip().lower()
+    if item_lower == "blood moon":
+        item_lower = "bloodmoon"
     if item_lower in DISPLAY_ONLY_SEEDS:
         msg = f"❌ Role assignment disabled for `{item_name}`. This item is display-only."
         if isinstance(ctx_or_interaction, discord.Interaction): await ctx_or_interaction.response.send_message(msg)
@@ -602,7 +583,7 @@ def execute_approve_draft(guild_id: int):
     bot_settings["roles"].update(draft_data["matches"])
     del pending_autorole_drafts[guild_id]
     pending_backup = True
-    return f"✅ **Success!** Automatically saved {len(draft_data['matches'])} tracking roles into the cloud database infrastructure!"
+    return f"✅ **Success!** Automatically saved matching tracking roles into file database systems!"
 
 def execute_deny_draft(guild_id: int):
     global pending_autorole_drafts
@@ -617,6 +598,12 @@ async def slash_ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! 🏓 Delay Factor: `{round(bot.latency * 1000)}ms`")
 
 @bot.tree.command(name="setchannel", description="Set standard alerting destination categories.")
+@app_commands.choices(category=[
+    app_commands.Choice(name="Weather", value="weather"),
+    app_commands.Choice(name="Seeds", value="seeds"),
+    app_commands.Choice(name="Gear", value="gear"),
+    app_commands.Choice(name="Crates", value="crates")
+])
 async def slash_setchannel(interaction: discord.Interaction, category: str, channel: discord.TextChannel):
     if not interaction.user.guild_permissions.manage_channels: return
     await interaction.response.send_message(await execute_setchannel(category, channel))
@@ -627,6 +614,7 @@ async def slash_setlogchannel(interaction: discord.Interaction, channel: discord
     await interaction.response.send_message(await execute_setlogchannel(channel))
 
 @bot.tree.command(name="ignoremissing", description="Mute a backend item from firing alert notification logs.")
+@app_commands.autocomplete(item_name=item_autocomplete)
 async def slash_ignoremissing(interaction: discord.Interaction, item_name: str):
     if not interaction.user.guild_permissions.manage_channels: return
     await interaction.response.send_message(await execute_ignoremissing(item_name))
@@ -638,6 +626,7 @@ async def slash_sendstock(interaction: discord.Interaction):
     await interaction.followup.send(await execute_sendstock())
 
 @bot.tree.command(name="setrole")
+@app_commands.autocomplete(item_name=item_autocomplete)
 async def slash_setrole(interaction: discord.Interaction, item_name: str, role: discord.Role):
     if not interaction.user.guild_permissions.manage_roles: return
     await interaction.response.send_message(await execute_setrole(item_name, role))
@@ -657,6 +646,7 @@ async def slash_autoroles(interaction: discord.Interaction):
         pending_autorole_drafts[interaction.guild_id]["last_msg_id"] = msg.id
 
 @bot.tree.command(name="editdraft")
+@app_commands.autocomplete(item_name=item_autocomplete)
 async def slash_editdraft(interaction: discord.Interaction, item_name: str, role: discord.Role):
     if not interaction.user.guild_permissions.manage_roles: return
     await execute_edit_draft_flow(interaction, interaction.guild_id, item_name, role)
