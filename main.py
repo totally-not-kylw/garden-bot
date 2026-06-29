@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 import os
 import threading
 import json
-import aiohttp
+from curl_cffi import requests as async_requests
 import asyncio
 import re
 import time
@@ -339,7 +339,7 @@ async def dispatch_stock_alerts(stock_data, force=False):
                     title="📦 Crate Shop!", description=timestamp_string + "\n".join(crate_list_str), color=discord.Color.gold()
                 ))
 
-# --- THE WIKI API ENGINE ---
+# --- THE WIKI API ENGINE (Cloudflare Bypass Powered) ---
 @tasks.loop(seconds=10)
 async def check_wiki_stock():
     global ready_to_track, bot_settings
@@ -350,19 +350,13 @@ async def check_wiki_stock():
         cache_buster = int(time.time())
         separator = "&" if "?" in API_URL else "?"
         busted_url = f"{API_URL}{separator}_cb={cache_buster}"
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Accept': 'application/json',
-            'Cache-Control': 'no-cache, no-store, must-revalidate'
-        }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(busted_url, headers=headers, timeout=8) as response:
-                if response.status != 200:
-                    return
-                api_data = await response.json()
+        # Uses curl_cffi to match an exact desktop Chrome TLS fingerprint
+        response = await async_requests.get(busted_url, impersonate="chrome", timeout=8)
+        if response.status_code != 200:
+            return
             
+        api_data = response.json()
         if api_data.get("stock"):
             await dispatch_stock_alerts(api_data.get("stock"))
             
@@ -430,10 +424,12 @@ async def execute_sendstock():
         cache_buster = int(time.time())
         separator = "&" if "?" in API_URL else "?"
         busted_url = f"{API_URL}{separator}_cb={cache_buster}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(busted_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8) as response:
-                if response.status != 200: return "❌ Could not complete execution: API connection error."
-                api_data = await response.json()
+        
+        response = await async_requests.get(busted_url, impersonate="chrome", timeout=8)
+        if response.status_code != 200: 
+            return "❌ Could not complete execution: API connection error."
+            
+        api_data = response.json()
         if api_data.get("stock"):
             await dispatch_stock_alerts(api_data.get("stock"), force=True)
             return "📢 **Broadcast Dispatched:** Instant stock alerts sent out to all mapped channels."
