@@ -351,11 +351,11 @@ async def check_wiki_stock():
         separator = "&" if "?" in API_URL else "?"
         busted_url = f"{API_URL}{separator}_cb={cache_buster}"
         
-        # Uses curl_cffi to match an exact desktop Chrome TLS fingerprint
         response = await async_requests.get(busted_url, impersonate="chrome", timeout=8)
         if response.status_code != 200:
             return
             
+        # FIXED: Removed 'await' from response.json()
         api_data = response.json()
         if api_data.get("stock"):
             await dispatch_stock_alerts(api_data.get("stock"))
@@ -429,6 +429,7 @@ async def execute_sendstock():
         if response.status_code != 200: 
             return "❌ Could not complete execution: API connection error."
             
+        # FIXED: Removed 'await' from response.json()
         api_data = response.json()
         if api_data.get("stock"):
             await dispatch_stock_alerts(api_data.get("stock"), force=True)
@@ -568,7 +569,7 @@ async def execute_edit_draft_flow(ctx_or_interaction, guild_id: int, item_name: 
         draft_data["last_msg_id"] = new_msg.id
     else:
         await ctx_or_interaction.send(content=success_text)
-        new_msg = await ctx_or_interaction.send(embeds=new_embeds)
+        new_msg = await ctx_or_send(embeds=new_embeds)
         draft_data["last_msg_id"] = new_msg.id
 
 def execute_approve_draft(guild_id: int):
